@@ -1,7 +1,7 @@
 #!/bin/sh
-#PJM -L rscgrp=b-batch
+#PJM -L rscgrp=c-batch
 #PJM -L node=1
-#PJM -L elapse=168:00:00
+#PJM -L elapse=24:00:00
 #PJM -j
 
 export OMP_NUM_THREADS=4
@@ -12,7 +12,7 @@ export PYTHONUNBUFFERED=1
 export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${SLURM_JOB_ID}_${SLURM_PROCID}.json
 
 torchrun \
-  --nproc_per_node=4 \
+  --nproc_per_node=8 \
   --master_port=29561 \
-  main_pretrain_siamjepa.py --data_path /home/pj26000049/ku60000347/Python/Dataset/ImageNet/ --output_dir ./output_dir_siamjepa --kl_scale=0.01 --accum_iter 4 --blr 1.5e-4 --batch_size 512 --mask_ratio 0.75 0.75 0.75 --ema 0.99 0.999 0.9999 --weight_decay 0.1 
+  main_pretrain_siamjepa.py --data_path /home/pj26000049/ku60000347/Python/Dataset/ImageNet/ --output_dir ./output_dir_siamjepa --kl_scale=0.01 --accum_iter 2 --blr 1.5e-4 --batch_size 512 --mask_ratio 0.75 0.75 0.75 --ema 0.99 0.999 0.9999 --weight_decay 0.1 
 
