@@ -53,12 +53,12 @@ Pretraining and linear probing expect an ImageNet-style folder layout:
 ## Pretraining
 
 ```bash
-torchrun --nproc_per_node=8 --master_port=29561 \
+torchrun --nproc_per_node=4 --master_port=29561 \
   main_pretrain_siamjepa.py \
   --data_path /path/to/imagenet/ \
   --output_dir ./output_dir_siamjepa \
   --model siamjepa_vit_base_patch16 \
-  --batch_size 512 --accum_iter 2 \
+  --batch_size 512 --accum_iter 4 \
   --blr 1.5e-4 --weight_decay 0.1 \
   --mask_ratio 0.75 0.75 0.75 \
   --ema 0.99 0.999 0.9999 \
@@ -71,7 +71,7 @@ Key arguments:
 - `--ema` — start/mid/end momentum values for the EMA teacher schedule.
 - `--kl_scale` — weight of the KL regularization term.
 
-See `run_pretrain.sh` for a full Slurm/PJM job example.
+Pretraining was run on a single node with 4x NVIDIA H100 GPUs. See `run_pretrain.sh` for a full Slurm/PJM job example.
 
 ## Linear probing
 
@@ -87,6 +87,10 @@ torchrun --nproc_per_node=8 --master_port=29532 \
 This loads the pretrained SiamJEPA encoder into a `vit_base_patch16` backbone, freezes all weights except a BatchNorm + linear head, and trains the head with LARS.
 
 See `run_linprobe_siamjepa.sh` for a full Slurm/PJM job example.
+
+## Reproducibility note
+
+Results were obtained on a single node with 4x NVIDIA H100 GPUs. Rerunning on a different number/type of GPUs, driver/CUDA version, or library versions can change the effective batch size, numerics, and data loading order, which may lead to different results even with the same hyperparameters and seed.
 
 ## License
 
