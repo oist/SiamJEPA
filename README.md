@@ -52,6 +52,8 @@ Pretraining and linear probing expect an ImageNet-style folder layout:
 
 ## Pretraining
 
+Currently only `siamjepa_vit_base_patch16` is supported (the large/huge variants in `models_siamjepa.py` are not yet implemented).
+
 ```bash
 torchrun --nproc_per_node=4 --master_port=29561 \
   main_pretrain_siamjepa.py \
