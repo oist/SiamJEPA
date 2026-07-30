@@ -4,6 +4,20 @@ SiamJEPA is a self-supervised visual representation learning method that combine
 
 The codebase is built on top of Meta's [MAE](https://github.com/facebookresearch/mae) implementation and reuses conventions from [DeiT](https://github.com/facebookresearch/deit), [BEiT](https://github.com/microsoft/unilm/tree/master/beit), and [MoCo v3](https://github.com/facebookresearch/moco-v3).
 
+## Paper
+
+Makoto Yamada, "SiamJEPA: On the Role of Siamese Student Encoders in JEPA," arXiv:2607.04044.
+[https://arxiv.org/abs/2607.04044](https://arxiv.org/abs/2607.04044)
+
+```bibtex
+@article{yamada2026siamjepa,
+  title   = {SiamJEPA: On the Role of Siamese Student Encoders in JEPA},
+  author  = {Yamada, Makoto},
+  journal = {arXiv preprint arXiv:2607.04044},
+  year    = {2026}
+}
+```
+
 ## Repository layout
 
 | Path | Description |
