@@ -44,6 +44,7 @@ import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
+import util.experiment_tracking as exptrack
 
 import models_siamjepa
 
@@ -92,9 +93,11 @@ def get_args_parser():
                         help='dataset path')
 
     parser.add_argument('--output_dir', default='./output_dir_siamjepa',
-                        help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_dir',
-                        help='path where to tensorboard log')
+                        help='path where to save, empty for no saving. '
+                             'A run-specific subdirectory (job id/timestamp + git commit + '
+                             'key hyperparameters) is created under this path for each run.')
+    parser.add_argument('--log_dir', default=None,
+                        help='path where to tensorboard log (default: reuse the resolved --output_dir)')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
@@ -127,7 +130,24 @@ def get_args_parser():
 def main(args):
     misc.init_distributed_mode(args)
 
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
+    repo_dir = os.path.dirname(os.path.realpath(__file__))
+    git_info = exptrack.get_git_info(repo_dir)
+
+    if args.output_dir:
+        mr = "-".join(f"{m:g}" for m in args.mask_ratio)
+        ema = "-".join(f"{e:g}" for e in args.ema)
+        tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"
+               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}")
+        args.output_dir = exptrack.make_run_dir(
+            args.output_dir, tag, git_info, misc.is_main_process(),
+            extra={"args": vars(args)},
+        )
+    if args.log_dir is None:
+        args.log_dir = args.output_dir
+
+    print('job dir: {}'.format(repo_dir))
+    print('git commit: {short_commit} (branch {branch}, dirty={dirty})'.format(**git_info))
+    print('resolved output_dir: {}'.format(args.output_dir))
     print("{}".format(args).replace(', ', ',\n'))
 
     device = torch.device(args.device)

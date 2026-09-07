@@ -40,6 +40,7 @@ from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from util.lars import LARS
 from util.crop import RandomResizedCrop
+import util.experiment_tracking as exptrack
 
 import models_vit
 
@@ -89,10 +90,12 @@ def get_args_parser():
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
 
-    parser.add_argument('--output_dir', default='./output_dir',
-                        help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_dir',
-                        help='path where to tensorboard log')
+    parser.add_argument('--output_dir', default='./output_dir_linprobe',
+                        help='path where to save, empty for no saving. '
+                             'A run-specific subdirectory (job id/timestamp + git commit + '
+                             'evaluated checkpoint) is created under this path for each run.')
+    parser.add_argument('--log_dir', default=None,
+                        help='path where to tensorboard log (default: reuse the resolved --output_dir)')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
@@ -126,7 +129,28 @@ def get_args_parser():
 def main(args):
     misc.init_distributed_mode(args)
 
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
+    repo_dir = os.path.dirname(os.path.realpath(__file__))
+    git_info = exptrack.get_git_info(repo_dir)
+
+    if args.output_dir and not args.eval:
+        if args.finetune:
+            ckpt_path = Path(args.finetune)
+            # include the pretrain run's directory name so the tag traces back
+            # to which pretrain run + epoch checkpoint this probe evaluates
+            ckpt_tag = f"{ckpt_path.parent.name}_{ckpt_path.stem}"
+        else:
+            ckpt_tag = "scratch"
+        tag = f"probe_{ckpt_tag}_wd{args.weight_decay:g}_blr{args.blr:g}"
+        args.output_dir = exptrack.make_run_dir(
+            args.output_dir, tag, git_info, misc.is_main_process(),
+            extra={"args": vars(args)},
+        )
+    if args.log_dir is None:
+        args.log_dir = args.output_dir
+
+    print('job dir: {}'.format(repo_dir))
+    print('git commit: {short_commit} (branch {branch}, dirty={dirty})'.format(**git_info))
+    print('resolved output_dir: {}'.format(args.output_dir))
     print("{}".format(args).replace(', ', ',\n'))
 
     device = torch.device(args.device)
