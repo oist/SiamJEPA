@@ -450,14 +450,16 @@ class SiamJEPA(nn.Module):
         return x1, x2, mask1, mask2, ids_restore
 
     def forward_encoder(self, x, mask_ratio):
+        # forward_encoder is only ever called with mask_ratio=0 (full pass over
+        # the teacher/EMA branch); random_masking() shuffled the patch order even
+        # in that no-op case, so encoder output no longer matched grid position.
+        assert mask_ratio == 0, "forward_encoder no longer supports masking; call with mask_ratio=0"
+
         # embed patches
         x = self.patch_embed(x)
 
         # add pos embed w/o cls token
         x = x + self.pos_embed[:, 1:, :]
-
-        # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
@@ -468,6 +470,10 @@ class SiamJEPA(nn.Module):
         for blk in self.blocks:
             x = blk(x)
         x = self.norm(x)
+
+        N, L = x.shape[0], x.shape[1] - 1
+        mask = torch.zeros([N, L], device=x.device)
+        ids_restore = torch.arange(L, device=x.device).unsqueeze(0).expand(N, -1)
 
         return x, mask, ids_restore
 
