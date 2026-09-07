@@ -1,4 +1,7 @@
 #!/bin/sh
+# NOTE: kept as a historical record of job 6723138 (KL=0.00001, weight_decay=0.05).
+# For new runs, use the parameterized run_pretrain.sh instead, e.g.:
+#   pjsub -x "KL_SCALE=0.00001,WEIGHT_DECAY=0.05" run_pretrain.sh
 #PJM -L rscgrp=b-batch
 #PJM -L node=1
 #PJM -L elapse=168:00:00
