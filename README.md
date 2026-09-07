@@ -1,5 +1,7 @@
 # SiamJEPA
 
+> **Note (September 2026):** While reviewing the code, we noticed that the teacher/EMA encoder pass (`forward_encoder`) could reshuffle patches even when no masking was requested, which affects the patch-position alignment used by the predictive loss. We're addressing this on the [`fix/forward-encoder-mask-shuffle`](https://github.com/oist/SiamJEPA/tree/fix/forward-encoder-mask-shuffle) branch and re-running the ImageNet linear-probing experiments with the update. Results in the current arXiv version (2607.04044) were obtained before this change and may be revised accordingly. We'll remove this note once the updated results are in.
+
 SiamJEPA is a self-supervised visual representation learning method that combines a **Siamese student/teacher encoder** with a **JEPA-style (Joint-Embedding Predictive Architecture) predictive objective**, regularized with a **KL term** between student and teacher latent distributions. The teacher is updated as an exponential moving average (EMA) of the student, following a momentum schedule.
 
 The codebase is built on top of Meta's [MAE](https://github.com/facebookresearch/mae) implementation and reuses conventions from [DeiT](https://github.com/facebookresearch/deit), [BEiT](https://github.com/microsoft/unilm/tree/master/beit), and [MoCo v3](https://github.com/facebookresearch/moco-v3).
