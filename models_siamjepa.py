@@ -208,7 +208,9 @@ class SiamJEPA(nn.Module):
         )
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred_latent = nn.Linear(decoder_embed_dim, embed_dim)
+        # predictor width (decoder_embed_dim) may differ from the teacher's embed_dim;
+        # project back to embed_dim before comparing against teacher features when they differ.
+        self.decoder_pred_latent = nn.Linear(decoder_embed_dim, embed_dim) if decoder_embed_dim != embed_dim else None
         self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True) # decoder to patch
 
         stoch_size = stoch * discrete if discrete != 0 else stoch * 2
@@ -510,6 +512,8 @@ class SiamJEPA(nn.Module):
         
         x_latent = self.decoder_norm(x)
         x_latent = x_latent[:,1:,:]
+        if self.decoder_pred_latent is not None:
+            x_latent = self.decoder_pred_latent(x_latent)  # decoder_embed_dim -> embed_dim
 
         return x_latent
     
@@ -656,10 +660,10 @@ class SiamJEPA(nn.Module):
         return loss,src_pred,loss_sim1,loss_sim2
 
 
-def siamjepa_vit_base_patch16_dec512d8b(**kwargs):
+def siamjepa_vit_base_patch16_dec512d8b(decoder_embed_dim=768, decoder_depth=1, decoder_num_heads=16, **kwargs):
     model = SiamJEPA(
         patch_size=16, embed_dim=768, depth=12, num_heads=12,
-        decoder_embed_dim=768, decoder_depth=1, decoder_num_heads=16,
+        decoder_embed_dim=decoder_embed_dim, decoder_depth=decoder_depth, decoder_num_heads=decoder_num_heads,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 

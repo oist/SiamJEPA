@@ -121,6 +121,10 @@ def get_args_parser():
     parser.add_argument('--kl_scale', type=float, default=0.01,help='KL scale (default: 0.01)')
     parser.add_argument('--num_target_blocks', type=int, default=4,
                         help='Number of non-overlapping target blocks hidden from both Siamese views (default: 4)')
+    parser.add_argument('--decoder_embed_dim', type=int, default=768,
+                        help='Predictor (decoder) embedding width; projected back to embed_dim if different (default: 768)')
+    parser.add_argument('--decoder_num_heads', type=int, default=16,
+                        help='Predictor (decoder) number of attention heads (default: 16)')
 
 
     return parser
@@ -175,7 +179,7 @@ def main(args):
     )
     
     # define the model
-    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],num_target_blocks=args.num_target_blocks)
+    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],num_target_blocks=args.num_target_blocks,decoder_embed_dim=args.decoder_embed_dim,decoder_num_heads=args.decoder_num_heads)
 
     model.to(device)
 
