@@ -123,6 +123,16 @@ def get_args_parser():
     parser.add_argument('--ema',type=float,nargs=3,default=(0.99, 0.999,0.9999),metavar=('EMA_START', 'MIDDLE_START','EMA_END'),help='EMA momentum schedule (start,middle, end). e.g. 0.99 0.999 0.9999')
     parser.add_argument('--kl_scale', type=float, default=0.01,help='KL scale (default: 0.01)')
 
+    parser.add_argument('--ijepa_masking', action='store_true',
+                        help='Use I-JEPA-style block masking (single contiguous context '
+                             'block per view, multiple non-overlapping target blocks) '
+                             'instead of the default scattered-patch context masking.')
+    parser.add_argument('--num_target_blocks', type=int, default=4,
+                        help='Number of target blocks when --ijepa_masking is set (I-JEPA default: 4).')
+    parser.add_argument('--target_aspect_ratio', type=float, nargs=2, default=(0.75, 1.5),
+                        metavar=('MIN', 'MAX'), help='Target block aspect-ratio range (I-JEPA default: 0.75 1.5).')
+    parser.add_argument('--context_aspect_ratio', type=float, nargs=2, default=(1.0, 1.0),
+                        metavar=('MIN', 'MAX'), help='Context block aspect-ratio range (I-JEPA default: 1.0 1.0, i.e. square).')
 
     return parser
 
@@ -136,8 +146,9 @@ def main(args):
     if args.output_dir:
         mr = "-".join(f"{m:g}" for m in args.mask_ratio)
         ema = "-".join(f"{e:g}" for e in args.ema)
+        masking_tag = f"ijepa{args.num_target_blocks}" if args.ijepa_masking else "scattered"
         tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"
-               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}")
+               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}_mask-{masking_tag}")
         args.output_dir = exptrack.make_run_dir(
             args.output_dir, tag, git_info, misc.is_main_process(),
             extra={"args": vars(args)},
@@ -193,7 +204,12 @@ def main(args):
     )
     
     # define the model
-    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0])
+    model = models_siamjepa.__dict__[args.model](
+        norm_pix_loss=args.norm_pix_loss, kl_scale=args.kl_scale, beta=args.ema[0],
+        mask_ratio=args.mask_ratio[0], use_ijepa_masking=args.ijepa_masking,
+        num_target_blocks=args.num_target_blocks,
+        target_aspect_ratio=tuple(args.target_aspect_ratio),
+        context_aspect_ratio=tuple(args.context_aspect_ratio))
 
     model.to(device)
 

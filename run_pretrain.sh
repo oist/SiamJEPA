@@ -24,6 +24,9 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   # a learning-rate sweep point, keeping everything else default
 #   pjsub -x "BLR=2.0e-4" run_pretrain.sh
 #
+#   # I-JEPA-style block masking instead of the default scattered-patch context
+#   pjsub -x "IJEPA_MASKING=1,NUM_TARGET_BLOCKS=4" run_pretrain.sh
+#
 # Every run still lands in its own self-describing subdirectory under
 # OUTPUT_DIR (see util/experiment_tracking.py), so runs never overwrite
 # each other's checkpoints/logs regardless of which variables were set.
@@ -38,11 +41,23 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${MASTER_PORT:=29561}"
 : "${OUTPUT_DIR:=./output_dir_siamjepa}"
 : "${DATA_PATH:=/home/pj26000049/ku60000347/Python/Dataset/ImageNet/}"
+: "${IJEPA_MASKING:=}"
+: "${NUM_TARGET_BLOCKS:=4}"
+: "${TARGET_ASPECT_RATIO:=0.75 1.5}"
+: "${CONTEXT_ASPECT_RATIO:=1.0 1.0}"
+
+if [ -n "$IJEPA_MASKING" ]; then
+  IJEPA_FLAG="--ijepa_masking"
+else
+  IJEPA_FLAG=""
+fi
 
 echo "=== Run config ==="
 echo "KL_SCALE=$KL_SCALE  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
 echo "BATCH_SIZE=$BATCH_SIZE  ACCUM_ITER=$ACCUM_ITER  MASK_RATIO=$MASK_RATIO  EMA=$EMA"
 echo "OUTPUT_DIR=$OUTPUT_DIR  DATA_PATH=$DATA_PATH  MASTER_PORT=$MASTER_PORT"
+echo "IJEPA_MASKING=$IJEPA_MASKING  NUM_TARGET_BLOCKS=$NUM_TARGET_BLOCKS"
+echo "TARGET_ASPECT_RATIO=$TARGET_ASPECT_RATIO  CONTEXT_ASPECT_RATIO=$CONTEXT_ASPECT_RATIO"
 echo "==================="
 
 torchrun \
@@ -57,4 +72,8 @@ torchrun \
   --batch_size $BATCH_SIZE \
   --mask_ratio $MASK_RATIO \
   --ema $EMA \
-  --weight_decay $WEIGHT_DECAY
+  --weight_decay $WEIGHT_DECAY \
+  --num_target_blocks $NUM_TARGET_BLOCKS \
+  --target_aspect_ratio $TARGET_ASPECT_RATIO \
+  --context_aspect_ratio $CONTEXT_ASPECT_RATIO \
+  $IJEPA_FLAG

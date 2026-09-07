@@ -13,6 +13,8 @@
 
 from functools import partial
 
+import math
+
 import torch
 import torch.nn as nn
 
@@ -160,6 +162,74 @@ def chk(name, t):
               "max", torch.nanmax(t).item())
     return ok
 
+
+def _ijepa_block_hw(area, aspect_ratio_range, H, W):
+    """Sample one block's (h, w) from an area budget and aspect-ratio
+    range, following I-JEPA's sampling formula: h = round(sqrt(area*ar)),
+    w = round(sqrt(area/ar)). Called once per block (not per sample) so
+    every sample in a call shares the same block shape, only its
+    placement differs (matching how the single target block's size was
+    already shared across a call before this)."""
+    ar_min, ar_max = aspect_ratio_range
+    ar = ar_min + torch.rand(1).item() * (ar_max - ar_min)
+    h = int(round(math.sqrt(max(area, 1) * ar)))
+    w = int(round(math.sqrt(max(area, 1) / ar)))
+    h = max(1, min(H, h))
+    w = max(1, min(W, w))
+    return h, w
+
+
+def _place_block(occupied, h, w, H, W, device, max_tries=20, allow_overlap_fallback=True):
+    """Return a boolean [H, W] mask for an h x w block placed to avoid
+    `occupied`. Tries random positions, then an exhaustive scan over
+    every valid position. If no non-overlapping position exists:
+      - allow_overlap_fallback=True: place anywhere anyway (may overlap
+        `occupied`). Used for target blocks, where occasionally
+        overlapping another target block only shrinks the target region
+        slightly and is harmless.
+      - allow_overlap_fallback=False: never overlap `occupied`, even if
+        that means returning fewer than h*w free cells (or, in the
+        degenerate case, every remaining free cell). Used for context
+        blocks, where the two views must stay disjoint; the caller
+        reconciles the resulting count back to an exact size."""
+    for _ in range(max_tries):
+        top = torch.randint(0, H - h + 1, (1,)).item()
+        left = torch.randint(0, W - w + 1, (1,)).item()
+        cand = torch.zeros(H, W, dtype=torch.bool, device=device)
+        cand[top:top + h, left:left + w] = True
+        if not (cand & occupied).any():
+            return cand
+    for top in range(H - h + 1):
+        for left in range(W - w + 1):
+            cand = torch.zeros(H, W, dtype=torch.bool, device=device)
+            cand[top:top + h, left:left + w] = True
+            if not (cand & occupied).any():
+                return cand
+    if allow_overlap_fallback:
+        top = torch.randint(0, H - h + 1, (1,)).item()
+        left = torch.randint(0, W - w + 1, (1,)).item()
+        cand = torch.zeros(H, W, dtype=torch.bool, device=device)
+        cand[top:top + h, left:left + w] = True
+        return cand
+    return ~occupied
+
+
+def _reconcile_count(ids_keep, pool, target_len):
+    """Adjust `ids_keep` to exactly `target_len` ids, drawing extra ids
+    from / returning excess ids to `pool` (consumed from the front).
+    Used to restore an exact per-view patch count after block placement,
+    whose size can be off by a few patches due to aspect-ratio rounding
+    or (rarely) the strict no-overlap-fallback in `_place_block`."""
+    n = ids_keep.numel()
+    if n == target_len:
+        return ids_keep, pool
+    if n > target_len:
+        pool = torch.cat([pool, ids_keep[target_len:]])
+        return ids_keep[:target_len], pool
+    need = target_len - n
+    return torch.cat([ids_keep, pool[:need]]), pool[need:]
+
+
 class SiamJEPA(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """
@@ -168,7 +238,9 @@ class SiamJEPA(nn.Module):
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
         discrete=32,kl_scale=0.01,
-        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9):
+        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,
+        use_ijepa_masking=False,num_target_blocks=4,
+        target_aspect_ratio=(0.75, 1.5),context_aspect_ratio=(1.0, 1.0)):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -255,6 +327,14 @@ class SiamJEPA(nn.Module):
         self.kl_freebit=kl_freebit
 
         self.mask_ratio=mask_ratio
+
+        # I-JEPA-style block masking (see random_masking_dual_ijepa):
+        # opt-in alternative to random_masking_dual's scattered-patch
+        # context. Off by default so existing configs are unaffected.
+        self.use_ijepa_masking = use_ijepa_masking
+        self.num_target_blocks = num_target_blocks
+        self.target_aspect_ratio = tuple(target_aspect_ratio)
+        self.context_aspect_ratio = tuple(context_aspect_ratio)
 
 
     def initialize_weights(self):
@@ -397,6 +477,118 @@ class SiamJEPA(nn.Module):
 
         return x_masked1, x_masked2, mask1, mask2, ids_restore
 
+    def random_masking_dual_ijepa(self, x, mask_ratio, num_target_blocks=None):
+        """
+        x: [N, L, D]
+        I-JEPA-style block masking, adapted to the Siamese dual-view setup:
+          - `num_target_blocks` target blocks are sampled I-JEPA-style
+            (scale from `mask_ratio`'s budget, aspect ratio from
+            self.target_aspect_ratio) and placed to avoid overlapping
+            each other (falling back to overlap only if no free spot
+            exists at all -- harmless, it only shrinks the target
+            region for that sample).
+          - Each view's context (view1/view2) is a single contiguous
+            block (aspect ratio from self.context_aspect_ratio), placed
+            to avoid the target region and each other -- never allowed
+            to overlap, so ids_keep1/ids_keep2 stay disjoint as required
+            to prevent shortcut learning (see random_masking_dual).
+          - Block shapes are sampled once per call and shared across the
+            batch (only placement differs per sample), matching how
+            random_masking_dual's single target block already worked.
+            Aspect-ratio rounding, or the rare case where a context block
+            has no room to fit without overlap, can make a block's raw
+            cell count differ from the intended len_keep; this is
+            reconciled to an exact count per sample by drawing extra
+            patches from / returning surplus patches to the remaining
+            free patches, so every sample yields exactly `len_keep`
+            patches per view regardless of how placement went.
+        """
+        if num_target_blocks is None:
+            num_target_blocks = self.num_target_blocks
+
+        N, L, D = x.shape
+        device = x.device
+
+        H = W = int(L ** 0.5)
+        assert H * W == L
+
+        len_keep = int(L * (1 - mask_ratio))
+        assert 2 * len_keep <= L
+
+        block_area = L - 2 * len_keep
+        num_blocks = max(1, min(num_target_blocks, block_area))
+        per_block_area = max(1, block_area // num_blocks)
+
+        # block shapes are sampled once per call (shared across the
+        # batch); only placement is randomized per sample below.
+        target_hw = [_ijepa_block_hw(per_block_area, self.target_aspect_ratio, H, W)
+                     for _ in range(num_blocks)]
+        context1_hw = _ijepa_block_hw(len_keep, self.context_aspect_ratio, H, W)
+        context2_hw = _ijepa_block_hw(len_keep, self.context_aspect_ratio, H, W)
+
+        all_ids = torch.arange(L, device=device)
+        ids_shuffle_list = []
+
+        for n in range(N):
+            occupied = torch.zeros(H, W, dtype=torch.bool, device=device)
+            for (h, w) in target_hw:
+                occupied = occupied | _place_block(
+                    occupied, h, w, H, W, device, allow_overlap_fallback=True)
+            target_occupied = occupied
+
+            ctx1 = _place_block(
+                target_occupied, *context1_hw, H, W, device, allow_overlap_fallback=False)
+            ctx2 = _place_block(
+                target_occupied | ctx1, *context2_hw, H, W, device, allow_overlap_fallback=False)
+
+            ids_keep1 = all_ids[ctx1.reshape(-1)]
+            ids_keep2 = all_ids[ctx2.reshape(-1)]
+
+            used = target_occupied | ctx1 | ctx2
+            pool = all_ids[~used.reshape(-1)]
+            pool = pool[torch.randperm(pool.numel(), device=device)]
+
+            ids_keep1, pool = _reconcile_count(ids_keep1, pool, len_keep)
+            ids_keep2, pool = _reconcile_count(ids_keep2, pool, len_keep)
+
+            kept_mask = torch.zeros(L, dtype=torch.bool, device=device)
+            kept_mask[ids_keep1] = True
+            kept_mask[ids_keep2] = True
+            rest_ids = all_ids[~kept_mask]
+            rest_ids = rest_ids[torch.randperm(rest_ids.numel(), device=device)]
+
+            # 先頭 2*len_keep だけが view1/view2 に使われる
+            # それ以降は両方から mask される
+            ids_shuffle = torch.cat([ids_keep1, ids_keep2, rest_ids], dim=0)
+            ids_shuffle_list.append(ids_shuffle)
+
+        ids_shuffle = torch.stack(ids_shuffle_list, dim=0)
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        ids_keep1 = ids_shuffle[:, :len_keep]
+        ids_keep2 = ids_shuffle[:, len_keep:2 * len_keep]
+
+        x_masked1 = torch.gather(
+            x, dim=1,
+            index=ids_keep1.unsqueeze(-1).repeat(1, 1, D)
+        )
+
+        x_masked2 = torch.gather(
+            x, dim=1,
+            index=ids_keep2.unsqueeze(-1).repeat(1, 1, D)
+        )
+
+        mask1 = torch.ones([N, L], device=device)
+        mask2 = torch.ones([N, L], device=device)
+
+        mask1[:, :len_keep] = 0
+        mask2[:, len_keep:2 * len_keep] = 0
+
+        mask1 = torch.gather(mask1, dim=1, index=ids_restore)
+        mask2 = torch.gather(mask2, dim=1, index=ids_restore)
+
+        return x_masked1, x_masked2, mask1, mask2, ids_restore
+
     def random_masking(self, x, mask_ratio):
         """
         Perform per-sample random masking by per-sample shuffling.
@@ -432,7 +624,9 @@ class SiamJEPA(nn.Module):
         x = x + self.pos_embed[:, 1:, :]
 
         # masking: length -> length * mask_ratio
-        x1, x2, mask1,mask2, ids_restore = self.random_masking_dual(x, mask_ratio)
+        masking_fn = (self.random_masking_dual_ijepa if self.use_ijepa_masking
+                      else self.random_masking_dual)
+        x1, x2, mask1,mask2, ids_restore = masking_fn(x, mask_ratio)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
