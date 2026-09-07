@@ -485,6 +485,17 @@ class SiamJEPA(nn.Module):
             x = blk(x)
         x = self.norm(x)
 
+        # random_masking shuffles all patches even when nothing is actually dropped
+        # (e.g. mask_ratio == 0), so slot j of x does not generally correspond to
+        # grid position j. Restore grid order here so callers can rely on it.
+        patches = x[:, 1:, :]
+        if patches.shape[1] == ids_restore.shape[1]:
+            patches = torch.gather(
+                patches, dim=1,
+                index=ids_restore.unsqueeze(-1).repeat(1, 1, patches.shape[-1])
+            )
+            x = torch.cat([x[:, :1, :], patches], dim=1)
+
         return x, mask, ids_restore
 
 
