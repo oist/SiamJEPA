@@ -168,7 +168,7 @@ class SiamJEPA(nn.Module):
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
         discrete=32,kl_scale=0.01,
-        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9):
+        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,num_target_blocks=4):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -255,6 +255,7 @@ class SiamJEPA(nn.Module):
         self.kl_freebit=kl_freebit
 
         self.mask_ratio=mask_ratio
+        self.num_target_blocks=num_target_blocks
 
 
     def initialize_weights(self):
@@ -315,13 +316,18 @@ class SiamJEPA(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], 3, h * p, h * p))
         return imgs
 
-    def random_masking_dual(self, x, mask_ratio):
+    def random_masking_dual(self, x, mask_ratio, num_target_blocks=None):
         """
         x: [N, L, D]
         ids_keep1 と ids_keep2 は overlap なし。
-        ランダム正方形ブロックは両viewから除外。
+        両viewから除外される領域（target領域）は単一の正方形ブロックではなく、
+        num_target_blocks 個の非重複な正方形ブロックに分割する（I-JEPA的マルチブロックターゲット）。
+        target領域の合計面積は従来の単一ブロック版と同じ（block_area）に保つ。
         残りから非重複に ids_keep1, ids_keep2 を選ぶ。
         """
+        if num_target_blocks is None:
+            num_target_blocks = getattr(self, "num_target_blocks", 1)
+
         N, L, D = x.shape
         device = x.device
 
@@ -332,26 +338,34 @@ class SiamJEPA(nn.Module):
         assert 2 * len_keep <= L
 
         block_area = L - 2 * len_keep
-        block_size = int(block_area ** 0.5)
-        block_size = max(1, block_size)
+        num_blocks = max(1, min(num_target_blocks, block_area))
+        per_block_area = max(1, block_area // num_blocks)
+        block_size = max(1, int(per_block_area ** 0.5))
+        max_tries = 20
 
         all_ids = torch.arange(L, device=device)
         ids_shuffle_list = []
 
         for n in range(N):
-            top = torch.randint(0, H - block_size + 1, (1,), device=device)
-            left = torch.randint(0, W - block_size + 1, (1,), device=device)
+            occupied = torch.zeros(H, W, dtype=torch.bool, device=device)
 
-            yy, xx = torch.meshgrid(
-                torch.arange(block_size, device=device),
-                torch.arange(block_size, device=device),
-                indexing="ij"
-            )
+            for _ in range(num_blocks):
+                placed = False
+                for _try in range(max_tries):
+                    top = torch.randint(0, H - block_size + 1, (1,), device=device).item()
+                    left = torch.randint(0, W - block_size + 1, (1,), device=device).item()
+                    if not occupied[top:top + block_size, left:left + block_size].any():
+                        occupied[top:top + block_size, left:left + block_size] = True
+                        placed = True
+                        break
+                if not placed:
+                    # 空き領域が見つからない場合は重なりを許容して配置する
+                    top = torch.randint(0, H - block_size + 1, (1,), device=device).item()
+                    left = torch.randint(0, W - block_size + 1, (1,), device=device).item()
+                    occupied[top:top + block_size, left:left + block_size] = True
 
-            block_ids = ((top + yy) * W + (left + xx)).reshape(-1)
-
-            is_block = torch.zeros(L, dtype=torch.bool, device=device)
-            is_block[block_ids] = True
+            is_block = occupied.reshape(-1)
+            block_ids = all_ids[is_block]
 
             outside_ids = all_ids[~is_block]
             outside_ids = outside_ids[torch.randperm(outside_ids.numel(), device=device)]
@@ -366,7 +380,7 @@ class SiamJEPA(nn.Module):
             rest_ids = rest_ids[torch.randperm(rest_ids.numel(), device=device)]
 
             # 先頭 2*len_keep だけが view1/view2 に使われる
-            # それ以降は両方から mask される
+            # それ以降は両方から mask される（複数ブロック + 端数のrest_ids）
             ids_shuffle = torch.cat([keep_ids, rest_ids, block_ids], dim=0)
             ids_shuffle_list.append(ids_shuffle)
 

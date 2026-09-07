@@ -119,6 +119,8 @@ def get_args_parser():
 
     parser.add_argument('--ema',type=float,nargs=3,default=(0.99, 0.999,0.9999),metavar=('EMA_START', 'MIDDLE_START','EMA_END'),help='EMA momentum schedule (start,middle, end). e.g. 0.99 0.999 0.9999')
     parser.add_argument('--kl_scale', type=float, default=0.01,help='KL scale (default: 0.01)')
+    parser.add_argument('--num_target_blocks', type=int, default=4,
+                        help='Number of non-overlapping target blocks hidden from both Siamese views (default: 4)')
 
 
     return parser
@@ -173,7 +175,7 @@ def main(args):
     )
     
     # define the model
-    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0])
+    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],num_target_blocks=args.num_target_blocks)
 
     model.to(device)
 
