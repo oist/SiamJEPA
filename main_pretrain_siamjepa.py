@@ -103,6 +103,14 @@ def get_args_parser():
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='',
                         help='resume from checkpoint')
+    parser.add_argument('--init_checkpoint', default='',
+                        help='Load only model weights (strict) from this checkpoint before '
+                             'training, then start a fresh run (epoch 0, fresh optimizer/EMA) '
+                             'with this script\'s hyperparameters -- a warm start, as opposed to '
+                             '--resume which also restores optimizer/epoch/scaler state to '
+                             'continue the same run. Requires an identical architecture (e.g. a '
+                             'PhiNetv2 checkpoint, since SiamJEPA and PhiNetv2 share the same '
+                             'model class/shapes).')
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
@@ -136,8 +144,9 @@ def main(args):
     if args.output_dir:
         mr = "-".join(f"{m:g}" for m in args.mask_ratio)
         ema = "-".join(f"{e:g}" for e in args.ema)
+        init_tag = "_init-phinetv2" if args.init_checkpoint else ""
         tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"
-               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}")
+               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}{init_tag}")
         args.output_dir = exptrack.make_run_dir(
             args.output_dir, tag, git_info, misc.is_main_process(),
             extra={"args": vars(args)},
@@ -196,6 +205,12 @@ def main(args):
     model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0])
 
     model.to(device)
+
+    if args.init_checkpoint:
+        print(f"Initializing model weights from {args.init_checkpoint} (weights only, fresh optimizer/epoch)")
+        init_ckpt = torch.load(args.init_checkpoint, map_location='cpu')
+        msg = model.load_state_dict(init_ckpt['model'], strict=True)
+        print(msg)
 
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
