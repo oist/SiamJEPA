@@ -3,6 +3,7 @@
 #PJM -L node=1
 #PJM -L elapse=168:00:00
 #PJM -j
+#PJM -o ./logs/%n.%j.out
 
 export OMP_NUM_THREADS=4
 export NCCL_ASYNC_ERROR_HANDLING=1

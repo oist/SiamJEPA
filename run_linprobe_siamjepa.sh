@@ -1,8 +1,9 @@
 #!/bin/sh
-#PJM -L rscgrp=c-batch
+#PJM -L rscgrp=b-batch
 #PJM -L node=1
 #PJM -L elapse=5:59:59
 #PJM -j
+#PJM -o ./logs/%n.%j.out
 
 export OMP_NUM_THREADS=4
 export NCCL_ASYNC_ERROR_HANDLING=1
@@ -26,8 +27,9 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${FINETUNE:?Set FINETUNE to a checkpoint path, e.g. pjsub -x \"FINETUNE=./output_dir_siamjepa/.../checkpoint-100.pth\" run_linprobe_siamjepa.sh}"
 : "${WEIGHT_DECAY:=0}"
 : "${BLR:=0.1}"
-: "${BATCH_SIZE:=256}"
+: "${BATCH_SIZE:=512}"
 : "${MASTER_PORT:=29532}"
+: "${NPROC_PER_NODE:=4}"
 : "${OUTPUT_DIR:=./output_dir_linprobe}"
 
 echo "=== Run config ==="
@@ -37,7 +39,7 @@ echo "OUTPUT_DIR=$OUTPUT_DIR  MASTER_PORT=$MASTER_PORT"
 echo "==================="
 
 torchrun \
-  --nproc_per_node=8 \
+  --nproc_per_node=$NPROC_PER_NODE \
   --master_port=$MASTER_PORT \
   main_linprobe_siamjepa.py \
   --output_dir $OUTPUT_DIR \
