@@ -6,3 +6,4 @@ output_dir_linprobe/
 output_dir/
 *.out
 elastic_err_*.json
+results*.csv
