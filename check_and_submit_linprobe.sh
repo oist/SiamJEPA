@@ -7,7 +7,7 @@
 set -e
 cd "$(dirname "$0")"
 
-MILESTONES="50 100 200 300 399"
+MILESTONES="50 100 150 200 250 300 350 399"
 
 for run_dir in output_dir_siamjepa/run*/; do
   [ -d "$run_dir" ] || continue
