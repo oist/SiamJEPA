@@ -20,6 +20,9 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   pjsub -x "FINETUNE=./output_dir_siamjepa/run6723042_.../checkpoint-100.pth" \
 #     run_linprobe_siamjepa.sh
 #
+#   # probe the EMA/teacher encoder instead of the student
+#   pjsub -x "FINETUNE=...,USE_EMA=1" run_linprobe_siamjepa.sh
+#
 # Every run lands in its own self-describing subdirectory under OUTPUT_DIR
 # (named after the checkpoint being evaluated; see util/experiment_tracking.py),
 # so evaluating many checkpoints never overwrites earlier results.
@@ -31,11 +34,18 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${MASTER_PORT:=29532}"
 : "${NPROC_PER_NODE:=4}"
 : "${OUTPUT_DIR:=./output_dir_linprobe}"
+: "${USE_EMA:=}"
+
+if [ -n "$USE_EMA" ]; then
+  USE_EMA_FLAG="--use_ema"
+else
+  USE_EMA_FLAG=""
+fi
 
 echo "=== Run config ==="
 echo "FINETUNE=$FINETUNE"
 echo "WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR  BATCH_SIZE=$BATCH_SIZE"
-echo "OUTPUT_DIR=$OUTPUT_DIR  MASTER_PORT=$MASTER_PORT"
+echo "OUTPUT_DIR=$OUTPUT_DIR  MASTER_PORT=$MASTER_PORT  USE_EMA=$USE_EMA"
 echo "==================="
 
 torchrun \
@@ -47,4 +57,5 @@ torchrun \
   --weight_decay $WEIGHT_DECAY \
   --blr $BLR \
   --finetune "$FINETUNE" \
-  --global_pool
+  --global_pool \
+  $USE_EMA_FLAG

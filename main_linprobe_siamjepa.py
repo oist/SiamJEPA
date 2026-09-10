@@ -89,6 +89,12 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
+    parser.add_argument('--use_ema', action='store_true',
+                        help='Probe the EMA/teacher encoder (checkpoint["model"]\'s '
+                             '"ema_model.*" keys) instead of the student encoder. The '
+                             'teacher only ever saw full, unmasked images during '
+                             'pretraining (mask_ratio=0), matching linprobe\'s input '
+                             'distribution, whereas the student mostly saw masked views.')
 
     parser.add_argument('--output_dir', default='./output_dir_linprobe',
                         help='path where to save, empty for no saving. '
@@ -140,7 +146,8 @@ def main(args):
             ckpt_tag = f"{ckpt_path.parent.name}_{ckpt_path.stem}"
         else:
             ckpt_tag = "scratch"
-        tag = f"probe_{ckpt_tag}_wd{args.weight_decay:g}_blr{args.blr:g}"
+        encoder_tag = "ema" if args.use_ema else "student"
+        tag = f"probe_{ckpt_tag}_{encoder_tag}_wd{args.weight_decay:g}_blr{args.blr:g}"
         args.output_dir = exptrack.make_run_dir(
             args.output_dir, tag, git_info, misc.is_main_process(),
             extra={"args": vars(args)},
@@ -230,6 +237,12 @@ def main(args):
 
         print("Load pre-trained checkpoint from: %s" % args.finetune)
         checkpoint_model = checkpoint['model']
+        if args.use_ema:
+            prefix = 'ema_model.'
+            ema_keys = {k[len(prefix):]: v for k, v in checkpoint_model.items() if k.startswith(prefix)}
+            assert ema_keys, f"--use_ema set but no '{prefix}*' keys found in checkpoint['model']"
+            print(f"Using EMA/teacher encoder weights ({len(ema_keys)} keys with prefix '{prefix}')")
+            checkpoint_model = ema_keys
         state_dict = model.state_dict()
         for k in ['head.weight', 'head.bias']:
             if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
