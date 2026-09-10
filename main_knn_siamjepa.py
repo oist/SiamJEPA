@@ -84,7 +84,7 @@ def extract_features(model, data_loader, device):
     all_features, all_labels = [], []
     for imgs, targets in data_loader:
         imgs = imgs.to(device, non_blocking=True)
-        with torch.cuda.amp.autocast():
+        with torch.autocast(device_type=device.type):
             feats = model.forward_features(imgs)
         feats = F.normalize(feats.float(), dim=-1)
         all_features.append(feats.cpu())
