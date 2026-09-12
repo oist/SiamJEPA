@@ -3,6 +3,8 @@ __pycache__/
 logs/
 output_dir_siamjepa/
 output_dir_linprobe/
+output_dir_knn/
+output_dir_posprobe/
 output_dir/
 *.out
 elastic_err_*.json
