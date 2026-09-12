@@ -29,6 +29,14 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   # checkpoint -- weights only, fresh optimizer/epoch; see --init_checkpoint)
 #   pjsub -x "INIT_CHECKPOINT=/path/to/checkpoint-200.pth" run_pretrain.sh
 #
+#   # a longer single continuous schedule (e.g. 600 epochs instead of 400) --
+#   # note b-batch caps a single job's elapse at 168h (604800s), so a 600-epoch
+#   # run at our observed ~3.3 epoch/hr pace (~179h total) will likely need one
+#   # resume-chained follow-up job; use RESUME to continue from a checkpoint
+#   # with the same EPOCHS target and args.start_epoch inferred from it:
+#   pjsub -x "EPOCHS=600" run_pretrain.sh
+#   pjsub -x "EPOCHS=600,RESUME=./output_dir_siamjepa/run.../checkpoint-NNN.pth" run_pretrain.sh
+#
 # Every run still lands in its own self-describing subdirectory under
 # OUTPUT_DIR (see util/experiment_tracking.py), so runs never overwrite
 # each other's checkpoints/logs regardless of which variables were set.
@@ -44,12 +52,14 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${OUTPUT_DIR:=./output_dir_siamjepa}"
 : "${DATA_PATH:=/home/pj26000049/ku60000347/Python/Dataset/ImageNet/}"
 : "${INIT_CHECKPOINT:=}"
+: "${EPOCHS:=400}"
+: "${RESUME:=}"
 
 echo "=== Run config ==="
 echo "KL_SCALE=$KL_SCALE  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
 echo "BATCH_SIZE=$BATCH_SIZE  ACCUM_ITER=$ACCUM_ITER  MASK_RATIO=$MASK_RATIO  EMA=$EMA"
 echo "OUTPUT_DIR=$OUTPUT_DIR  DATA_PATH=$DATA_PATH  MASTER_PORT=$MASTER_PORT"
-echo "INIT_CHECKPOINT=$INIT_CHECKPOINT"
+echo "INIT_CHECKPOINT=$INIT_CHECKPOINT  EPOCHS=$EPOCHS  RESUME=$RESUME"
 echo "==================="
 
 torchrun \
@@ -65,4 +75,6 @@ torchrun \
   --mask_ratio $MASK_RATIO \
   --ema $EMA \
   --weight_decay $WEIGHT_DECAY \
+  --epochs $EPOCHS \
+  --resume "$RESUME" \
   --init_checkpoint "$INIT_CHECKPOINT"
