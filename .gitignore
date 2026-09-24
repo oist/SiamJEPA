@@ -9,3 +9,4 @@ output_dir/
 *.out
 elastic_err_*.json
 results*.csv
+output_dir_linprobe_ijepa/
