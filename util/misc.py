@@ -341,3 +341,15 @@ def all_reduce_mean(x):
         return x_reduce.item()
     else:
         return x
+
+
+def all_reduce_mean_list(xs):
+    """all_reduce_mean for several scalars with a single collective."""
+    world_size = get_world_size()
+    if world_size > 1:
+        x_reduce = torch.tensor(xs, dtype=torch.float64).cuda()
+        dist.all_reduce(x_reduce)
+        x_reduce /= world_size
+        return x_reduce.tolist()
+    else:
+        return list(xs)

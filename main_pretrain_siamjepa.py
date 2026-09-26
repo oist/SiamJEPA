@@ -70,6 +70,13 @@ def get_args_parser():
 
     parser.add_argument('--mask_ratio',type=float,nargs=3,default=(0.75, 0.75, 0.75),metavar=('First mask', 'Second mask', 'Third mask'),help='Masking ratio (percentage of removed patches).')
 
+    parser.add_argument('--precision', default='fp32', choices=['fp32', 'tf32', 'bf16'],
+                        help='fp32: plain fp32 matmuls (the original setting); tf32: fp32 with '
+                             'TF32 tensor-core matmuls; bf16: bf16 autocast for the encoders '
+                             '(+TF32 for whatever stays fp32). Losses/KL are always fp32.')
+    parser.add_argument('--bf16_predictor', action='store_true',
+                        help='with --precision bf16, also run the predictor (CSABlock) in bf16 '
+                             'instead of its default fp32 islands')
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=False)
@@ -153,6 +160,8 @@ def main(args):
         ema = "-".join(f"{e:g}" for e in args.ema)
         init_tag = "_init-phinetv2" if args.init_checkpoint else ""
         rst_tag = "_rst" if args.shuffle_teacher else ""
+        if args.precision != 'fp32':
+            rst_tag += f"_{args.precision}" + ("-pred" if args.bf16_predictor else "")
         tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"
                f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}{rst_tag}{init_tag}")
         args.output_dir = exptrack.make_run_dir(
@@ -175,6 +184,9 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
+    if args.precision in ('tf32', 'bf16'):
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     # simple augmentation
     transform_train = transforms.Compose([
@@ -211,6 +223,12 @@ def main(args):
     
     # define the model
     model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],shuffle_teacher=args.shuffle_teacher)
+
+    if args.bf16_predictor:
+        assert args.precision == 'bf16', "--bf16_predictor requires --precision bf16"
+        for m in model.modules():
+            if isinstance(m, models_siamjepa.CSABlock):
+                m.force_fp32 = False
 
     model.to(device)
 

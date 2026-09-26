@@ -40,6 +40,10 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   # Random Shuffle Teacher (RST) curriculum -- stage 1 (RST on), then stage 2
 #   # warm-started from stage 1's checkpoint with RST off:
 #   pjsub -x "EPOCHS=200,SHUFFLE_TEACHER=1" run_pretrain.sh
+#
+#   # faster numerics: PRECISION=tf32 or bf16 (default fp32 = original runs);
+#   # BF16_PREDICTOR=1 also runs the predictor in bf16 (only with bf16)
+#   pjsub -x "PRECISION=bf16" run_pretrain.sh
 #   pjsub -x "EPOCHS=250,INIT_CHECKPOINT=./output_dir_siamjepa/<stage-1-run>/checkpoint-199.pth" run_pretrain.sh
 #
 # Every run still lands in its own self-describing subdirectory under
@@ -60,10 +64,16 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${EPOCHS:=400}"
 : "${RESUME:=}"
 : "${SHUFFLE_TEACHER:=}"
+: "${PRECISION:=fp32}"
+: "${BF16_PREDICTOR:=}"
 
 SHUFFLE_FLAG=""
 if [ -n "$SHUFFLE_TEACHER" ]; then
   SHUFFLE_FLAG="--shuffle_teacher"
+fi
+BF16_PREDICTOR_FLAG=""
+if [ -n "$BF16_PREDICTOR" ]; then
+  BF16_PREDICTOR_FLAG="--bf16_predictor"
 fi
 
 echo "=== Run config ==="
@@ -71,7 +81,7 @@ echo "KL_SCALE=$KL_SCALE  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
 echo "BATCH_SIZE=$BATCH_SIZE  ACCUM_ITER=$ACCUM_ITER  MASK_RATIO=$MASK_RATIO  EMA=$EMA"
 echo "OUTPUT_DIR=$OUTPUT_DIR  DATA_PATH=$DATA_PATH  MASTER_PORT=$MASTER_PORT"
 echo "INIT_CHECKPOINT=$INIT_CHECKPOINT  EPOCHS=$EPOCHS  RESUME=$RESUME"
-echo "SHUFFLE_TEACHER=$SHUFFLE_TEACHER"
+echo "SHUFFLE_TEACHER=$SHUFFLE_TEACHER  PRECISION=$PRECISION  BF16_PREDICTOR=$BF16_PREDICTOR"
 echo "==================="
 
 torchrun \
@@ -90,4 +100,5 @@ torchrun \
   --epochs $EPOCHS \
   --resume "$RESUME" \
   --init_checkpoint "$INIT_CHECKPOINT" \
-  $SHUFFLE_FLAG
+  --precision $PRECISION \
+  $SHUFFLE_FLAG $BF16_PREDICTOR_FLAG

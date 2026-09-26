@@ -40,6 +40,10 @@ def train_one_epoch_siamjepa(model: torch.nn.Module,
 
     model_without_ddp = model.module if hasattr(model, "module") else model
 
+    # --precision bf16: bf16 autocast for the encoders/predictor; losses and
+    # the KL term are still computed in fp32 inside the model
+    use_bf16 = getattr(args, 'precision', 'fp32') == 'bf16'
+
     num_steps = len(data_loader)
     updates_per_epoch = (num_steps + accum_iter - 1) // accum_iter  # ceil
 
@@ -63,12 +67,15 @@ def train_one_epoch_siamjepa(model: torch.nn.Module,
         maybe_no_sync = (model.no_sync if (hasattr(model, "no_sync") and not is_update_step) else None)
 
         if maybe_no_sync is None:
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_bf16):
                 loss, _, loss_sim1, loss_sim2 = model(samples)
 
-            loss_value = loss.item()
+            # one host sync for all three logged values
+            loss_value, loss_sim1_value, loss_sim2_value = torch.stack(
+                [loss.detach(), loss_sim1.detach(), loss_sim2.detach()]).float().tolist()
             if not math.isfinite(loss_value):
-                print(f"Loss is {loss_value}, stopping training")
+                print(f"Loss is {loss_value} (loss_sim1={loss_sim1_value}, "
+                      f"loss_sim2={loss_sim2_value}), stopping training")
                 sys.exit(1)
 
             loss = loss / accum_iter
@@ -100,12 +107,14 @@ def train_one_epoch_siamjepa(model: torch.nn.Module,
 
         else:
             with maybe_no_sync():
-                with torch.cuda.amp.autocast(enabled=False):
+                with torch.autocast('cuda', dtype=torch.bfloat16, enabled=use_bf16):
                     loss, _, loss_sim1, loss_sim2 = model(samples)
 
-                loss_value = loss.item()
+                loss_value, loss_sim1_value, loss_sim2_value = torch.stack(
+                    [loss.detach(), loss_sim1.detach(), loss_sim2.detach()]).float().tolist()
                 if not math.isfinite(loss_value):
-                    print(f"Loss is {loss_value}, stopping training")
+                    print(f"Loss is {loss_value} (loss_sim1={loss_sim1_value}, "
+                          f"loss_sim2={loss_sim2_value}), stopping training")
                     sys.exit(1)
 
                 loss = loss / accum_iter
@@ -117,17 +126,19 @@ def train_one_epoch_siamjepa(model: torch.nn.Module,
             cur_beta = model_without_ddp.beta  # ログ用
 
         metric_logger.update(loss=loss_value)
-        metric_logger.update(loss_sim1=loss_sim1.item())
-        metric_logger.update(loss_sim2=loss_sim2.item())
+        metric_logger.update(loss_sim1=loss_sim1_value)
+        metric_logger.update(loss_sim2=loss_sim2_value)
         metric_logger.update(ema_beta=cur_beta)
 
         lr = optimizer.param_groups[0]["lr"]
         metric_logger.update(lr=lr)
 
-        loss_value_reduce = misc.all_reduce_mean(loss_value)
-        loss_sim1_reduce = misc.all_reduce_mean(loss_sim1.item())
-        loss_sim2_reduce = misc.all_reduce_mean(loss_sim2.item())
-        beta_reduce = misc.all_reduce_mean(cur_beta)
+        if is_update_step:
+            # only reduced for tensorboard, so only on update steps (the same
+            # steps on every rank) and as a single collective
+            (loss_value_reduce, loss_sim1_reduce, loss_sim2_reduce,
+             beta_reduce) = misc.all_reduce_mean_list(
+                [loss_value, loss_sim1_value, loss_sim2_value, cur_beta])
 
         if log_writer is not None and is_update_step:
             epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
