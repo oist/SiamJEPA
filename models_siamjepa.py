@@ -173,6 +173,8 @@ class SiamJEPA(nn.Module):
     """
     # submodules / parameters kept in the (encoder-only) EMA teacher
     EMA_ENCODER_KEYS = ('patch_embed', 'cls_token', 'pos_embed', 'blocks', 'norm')
+    # never-used modules removed from the model; older checkpoints still carry them
+    REMOVED_MODULES = ('decoder_embed', 'decoder_pred_latent', 'decoder_pred', 'decoder_embed_mae')
 
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
                  embed_dim=1024, depth=24, num_heads=16,
@@ -199,8 +201,6 @@ class SiamJEPA(nn.Module):
 
         # --------------------------------------------------------------------------
         # SiamJEPA decoder (predictor) specifics
-        self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
-
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
@@ -220,14 +220,10 @@ class SiamJEPA(nn.Module):
         )
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred_latent = nn.Linear(decoder_embed_dim, embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True) # decoder to patch
 
         stoch_size = stoch * discrete if discrete != 0 else stoch * 2
-        self.decoder_embed_mae = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.decoder_embed_deter = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.decoder_embed_stoch = nn.Linear(stoch_size, decoder_embed_dim, bias=True)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
         # Posterior takes both src_h and tgt_h
         # Thus it has embed_dim * 2 as an input dimension
@@ -510,7 +506,6 @@ class SiamJEPA(nn.Module):
 
     def forward_predictor(self, x, ids_restore,z):
         # embed tokens
-        #x = self.decoder_embed(x)
         x = self.decoder_embed_deter(x)
 
         mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
@@ -553,17 +548,66 @@ class SiamJEPA(nn.Module):
         torch._foreach_mul_(ema_params, model.beta)
         torch._foreach_add_(ema_params, student_params, alpha=1 - model.beta)
 
+    @classmethod
+    def _is_legacy_key(cls, key, own_keys):
+        # keys that older checkpoints carry but this model no longer has: the
+        # non-encoder part of the EMA copy, and REMOVED_MODULES (student or EMA)
+        if key in own_keys:
+            return False
+        name = key[len('ema_model.'):] if key.startswith('ema_model.') else key
+        return key.startswith('ema_model.') or name.split('.')[0] in cls.REMOVED_MODULES
+
     def load_state_dict(self, state_dict, strict=True, **kwargs):
-        # Checkpoints written before the EMA copy became encoder-only also
-        # carry ema_model.{decoder_*, projector, to_prior, ...}; drop those so
-        # old checkpoints still load with strict=True (--resume/--init_checkpoint).
+        # Older checkpoints also carry ema_model.{decoder_*, projector, ...}
+        # and the removed unused modules; drop those so they still load with
+        # strict=True (--resume/--init_checkpoint).
         own_keys = set(self.state_dict().keys())
-        stale = [k for k in state_dict if k.startswith('ema_model.') and k not in own_keys]
+        stale = [k for k in state_dict if self._is_legacy_key(k, own_keys)]
         if stale:
             state_dict = {k: v for k, v in state_dict.items() if k not in stale}
-            print(f"load_state_dict: dropped {len(stale)} non-encoder ema_model.* keys "
-                  f"(checkpoint from before the encoder-only EMA teacher)")
+            print(f"load_state_dict: dropped {len(stale)} keys this model no longer has "
+                  f"(non-encoder ema_model.*, removed unused modules)")
         return super().load_state_dict(state_dict, strict=strict, **kwargs)
+
+    def convert_legacy_optimizer_state(self, optim_state, model_state):
+        """Make an optimizer state saved together with an older checkpoint
+        (which still had REMOVED_MODULES) loadable into an optimizer built by
+        optim_factory.add_weight_decay over this model: drop the removed
+        parameters' entries and renumber the rest."""
+        own_keys = set(self.state_dict().keys())
+        if not any(self._is_legacy_key(k, own_keys) and not k.startswith('ema_model.')
+                   for k in model_state):
+            return optim_state
+        trainable = [n for n, p in self.named_parameters() if p.requires_grad]
+        trainable_set = set(trainable)
+        # the old model's trainable parameters, in named_parameters() order
+        # (state_dict order, minus buffers / frozen pos_embeds / the EMA copy)
+        old_names = [k for k in model_state
+                     if k in trainable_set or (not k.startswith('ema_model.')
+                                               and self._is_legacy_key(k, own_keys))]
+
+        def groups(names):  # same split and order as optim_factory.add_weight_decay
+            no_decay = [n for n in names if model_state[n].ndim == 1 or n.endswith('.bias')]
+            decay = [n for n in names if n not in set(no_decay)]
+            return [no_decay, decay]
+
+        old_groups = groups(old_names)
+        new_names = [n for n in old_names if n in trainable_set]
+        assert new_names == trainable, "parameter order differs from the checkpoint"
+        new_groups = groups(new_names)
+        assert [len(g) for g in old_groups] == [len(g['params']) for g in optim_state['param_groups']], \
+            "optimizer state does not match the checkpoint's parameters"
+
+        old_index = {n: i for i, n in enumerate(old_groups[0] + old_groups[1])}
+        new_index = {n: i for i, n in enumerate(new_groups[0] + new_groups[1])}
+        state = {new_index[n]: optim_state['state'][old_index[n]]
+                 for n in new_index if old_index[n] in optim_state['state']}
+        param_groups = []
+        for g, names in zip(optim_state['param_groups'], new_groups):
+            param_groups.append({**g, 'params': [new_index[n] for n in names]})
+        print(f"convert_legacy_optimizer_state: dropped "
+              f"{len(old_index) - len(new_index)} removed parameters from the optimizer state")
+        return {'state': state, 'param_groups': param_groups}
 
     def get_feat(self, h, z,ids):
         h = self.decoder_embed_deter(h) + self.decoder_pos_embed

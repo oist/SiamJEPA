@@ -24,10 +24,11 @@ if [ -n "$CHECKPOINT" ]; then
 fi
 
 for cfg in $CONFIGS; do
-  repo=.; [ "${cfg%%:*}" = old ] && repo=$OLD_REPO
+  repo=.; unused=""
+  [ "${cfg%%:*}" = old ] && repo=$OLD_REPO && unused=--find_unused_parameters
   prec=${cfg#*:}; extra=""
   [ "$prec" = bf16-pred ] && prec=bf16 && extra=--bf16_predictor
   torchrun --nproc_per_node=4 --master_port=$MASTER_PORT bench/bench_pretrain_speed.py \
     --repo "$repo" --model $MODEL --batch_size $BATCH_SIZE --accum_iter $ACCUM_ITER \
-    --precision $prec $extra --tag "$cfg" 2>&1 | grep -E "RESULT|Error|error|OutOfMemory" | head -5
+    --precision $prec $extra $unused --tag "$cfg" 2>&1 | grep -E "RESULT|Error|error|OutOfMemory" | head -5
 done

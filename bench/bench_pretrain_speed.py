@@ -1,7 +1,7 @@
 # Pretraining throughput / memory benchmark on synthetic data.
 #
-# Mirrors the real training step (engine_pretrain.py): DDP with
-# find_unused_parameters, no_sync gradient accumulation, GradScaler +
+# Mirrors the real training step (engine_pretrain.py): DDP, no_sync gradient
+# accumulation, GradScaler +
 # clip_grad=3.0, AdamW, EMA update after every optimizer step. Data loading
 # is left out on purpose (real runs are not data-bound: data ~0.0004 s/it).
 #
@@ -27,6 +27,9 @@ def get_args():
     p.add_argument('--warmup', default=8, type=int, help='micro-steps not timed')
     p.add_argument('--iters', default=24, type=int, help='micro-steps timed')
     p.add_argument('--tag', default='')
+    p.add_argument('--find_unused_parameters', action='store_true',
+                   help='DDP setting of older checkouts (they had never-used modules); '
+                        'turned on automatically when the model still has them')
     return p.parse_args()
 
 
@@ -61,10 +64,13 @@ def main():
     n_student = sum(p.numel() for n, p in model.named_parameters() if not n.startswith('ema_model.'))
     n_ema = sum(p.numel() for p in model.ema_model.parameters())
 
+    find_unused = args.find_unused_parameters or any(
+        hasattr(model, n) for n in ('decoder_pred', 'decoder_embed_mae'))
+
     model_without_ddp = model
     if distributed:
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[local_rank], find_unused_parameters=True)
+            model, device_ids=[local_rank], find_unused_parameters=find_unused)
         model_without_ddp = model.module
     param_groups = optim_factory.add_weight_decay(model_without_ddp, 0.1)
     optimizer = torch.optim.AdamW(param_groups, lr=1e-4, betas=(0.9, 0.95))

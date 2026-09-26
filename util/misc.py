@@ -325,7 +325,12 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
         #print(msg)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and not (hasattr(args, 'eval') and args.eval):
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            optim_state = checkpoint['optimizer']
+            if hasattr(model_without_ddp, 'convert_legacy_optimizer_state'):
+                # checkpoints from before unused modules were removed
+                optim_state = model_without_ddp.convert_legacy_optimizer_state(
+                    optim_state, checkpoint['model'])
+            optimizer.load_state_dict(optim_state)
             args.start_epoch = checkpoint['epoch'] + 1
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
