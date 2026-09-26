@@ -97,7 +97,8 @@ report("masking per-position frequencies new ~= old", fd < 0.03,
 # ----------------------------------------- 3. full forward / backward / EMA
 ckpt = torch.load(args.checkpoint, map_location='cpu')['model']
 old = old_mod.siamjepa_vit_base_patch16(kl_scale=0.01, beta=0.99, mask_ratio=0.75).to(dev)
-new = new_mod.siamjepa_vit_base_patch16(kl_scale=0.01, beta=0.99, mask_ratio=0.75).to(dev)
+new = new_mod.siamjepa_vit_base_patch16(kl_scale=0.01, beta=0.99, mask_ratio=0.75,
+                                        fix_view2_restore=False).to(dev)  # old code = pre-fix placement
 old.load_state_dict(ckpt, strict=True)
 new.load_state_dict(ckpt, strict=True)  # drops stale ema_model.* keys
 report("old full-EMA checkpoint loads strictly into encoder-only EMA model", True, "")

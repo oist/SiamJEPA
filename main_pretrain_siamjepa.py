@@ -77,6 +77,10 @@ def get_args_parser():
     parser.add_argument('--bf16_predictor', action='store_true',
                         help='with --precision bf16, also run the predictor (CSABlock) in bf16 '
                              'instead of its default fp32 islands')
+    parser.add_argument('--legacy_view2_restore', action='store_true',
+                        help='reproduce runs made before the view2 predictor fix: view2 reuses '
+                             'view1\'s ids_restore, so its context tokens sit in view1\'s slots '
+                             '(default: each view uses its own ids_restore)')
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=False)
@@ -160,6 +164,8 @@ def main(args):
         ema = "-".join(f"{e:g}" for e in args.ema)
         init_tag = "_init-phinetv2" if args.init_checkpoint else ""
         rst_tag = "_rst" if args.shuffle_teacher else ""
+        if not args.legacy_view2_restore:
+            rst_tag += "_v2fix"
         if args.precision != 'fp32':
             rst_tag += f"_{args.precision}" + ("-pred" if args.bf16_predictor else "")
         tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"
@@ -222,7 +228,7 @@ def main(args):
     )
     
     # define the model
-    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],shuffle_teacher=args.shuffle_teacher)
+    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],shuffle_teacher=args.shuffle_teacher,fix_view2_restore=not args.legacy_view2_restore)
 
     if args.bf16_predictor:
         assert args.precision == 'bf16', "--bf16_predictor requires --precision bf16"

@@ -180,7 +180,7 @@ class SiamJEPA(nn.Module):
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
         discrete=32,kl_scale=0.01,
         kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,
-        shuffle_teacher=False):
+        shuffle_teacher=False, fix_view2_restore=True):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -256,6 +256,12 @@ class SiamJEPA(nn.Module):
         # the EMA deep-copy so both branches carry the same setting.
         self.shuffle_teacher = shuffle_teacher
 
+        # Bug fix: the view2 predictor used to reuse view1's ids_restore, which
+        # puts view2's context tokens in view1's slots (so they get view1's
+        # decoder_pos_embed). With this on (default), view2 gets its own
+        # ids_restore. Target slots / the loss are the same either way.
+        # fix_view2_restore=False reproduces runs made before the fix.
+        self.fix_view2_restore = fix_view2_restore
 
         self.initialize_weights()
 
@@ -656,8 +662,19 @@ class SiamJEPA(nn.Module):
         prior_logits2 = prior_logits2.clamp(-20, 20)
 
         #Predictor g
+        if self.fix_view2_restore:
+            # ids_shuffle = [view1 keep | view2 keep | masked in both];
+            # swap the first two segments so view2's tokens land in their own slots
+            len_keep = src_p.shape[1] - 1
+            ids_shuffle = torch.argsort(ids_restore, dim=1)
+            ids_restore2 = torch.argsort(torch.cat(
+                [ids_shuffle[:, len_keep:2 * len_keep], ids_shuffle[:, :len_keep],
+                 ids_shuffle[:, 2 * len_keep:]], dim=1), dim=1)
+        else:
+            ids_restore2 = ids_restore
+
         src_pred = self.forward_predictor(src_h_ca3, ids_restore, post_z1)
-        tgt_pred = self.forward_predictor(src_p_ca3, ids_restore, post_z2)
+        tgt_pred = self.forward_predictor(src_p_ca3, ids_restore2, post_z2)
 
         # KL in fp32 regardless of the autocast mode (the logits are already fp32)
         with torch.cuda.amp.autocast(enabled=False):
