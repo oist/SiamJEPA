@@ -14,12 +14,15 @@ export PYTHONUNBUFFERED=1
 # ImageNet train set like kNN), so this should be much quicker than the kNN
 # CPU jobs even accounting for a-batch's queue behavior.
 #
-#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth" run_posprobe_siamjepa_cpu.sh
+#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth" probes/run_posprobe_siamjepa_cpu.sh
 #
 #   # probe the EMA/teacher encoder instead of the student
-#   pjsub -x "FINETUNE=...,USE_EMA=1" run_posprobe_siamjepa_cpu.sh
+#   pjsub -x "FINETUNE=...,USE_EMA=1" probes/run_posprobe_siamjepa_cpu.sh
+#
+# Submit from the repo root (not from inside probes/) so relative paths like
+# OUTPUT_DIR resolve the same way as every other run_*.sh script.
 # ------------------------------------------------------------------------------
-: "${FINETUNE:?Set FINETUNE to a checkpoint path, e.g. pjsub -x \"FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth\" run_posprobe_siamjepa_cpu.sh}"
+: "${FINETUNE:?Set FINETUNE to a checkpoint path, e.g. pjsub -x \"FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth\" probes/run_posprobe_siamjepa_cpu.sh}"
 : "${BATCH_SIZE:=64}"
 : "${NUM_WORKERS:=32}"
 : "${NUM_TRAIN_IMAGES:=2000}"
@@ -41,7 +44,7 @@ echo "OUTPUT_DIR=$OUTPUT_DIR  USE_EMA=$USE_EMA"
 echo "nproc: $(nproc)"
 echo "========================="
 
-python3 main_position_probe_siamjepa.py \
+python3 probes/main_position_probe_siamjepa.py \
   --device cpu \
   --output_dir $OUTPUT_DIR \
   --batch_size $BATCH_SIZE \

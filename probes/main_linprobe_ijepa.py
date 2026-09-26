@@ -22,8 +22,13 @@ import datetime
 import json
 import math
 import os
+import sys
 import time
 from pathlib import Path
+
+# This script lives in probes/; add the repo root (its parent) to sys.path so
+# `models_vit`, `util`, and `timm` resolve regardless of invocation directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import torch

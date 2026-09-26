@@ -23,9 +23,12 @@ export PYTHONUNBUFFERED=1
 # (misc.init_distributed_mode falls back to non-distributed automatically
 # when RANK/WORLD_SIZE aren't set).
 #
-#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth" run_knn_siamjepa_cpu.sh
+#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth" probes/run_knn_siamjepa_cpu.sh
+#
+# Submit from the repo root (not from inside probes/) so relative paths like
+# OUTPUT_DIR resolve the same way as every other run_*.sh script.
 # ------------------------------------------------------------------------------
-: "${FINETUNE:?Set FINETUNE to a checkpoint path, e.g. pjsub -x \"FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth\" run_knn_siamjepa_cpu.sh}"
+: "${FINETUNE:?Set FINETUNE to a checkpoint path, e.g. pjsub -x \"FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth\" probes/run_knn_siamjepa_cpu.sh}"
 : "${BATCH_SIZE:=64}"
 : "${NUM_WORKERS:=32}"
 : "${OUTPUT_DIR:=./output_dir_knn}"
@@ -46,7 +49,7 @@ echo "OUTPUT_DIR=$OUTPUT_DIR  USE_EMA=$USE_EMA"
 echo "nproc: $(nproc)"
 echo "========================="
 
-python3 main_knn_siamjepa.py \
+python3 probes/main_knn_siamjepa.py \
   --device cpu \
   --output_dir $OUTPUT_DIR \
   --batch_size $BATCH_SIZE \

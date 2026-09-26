@@ -168,7 +168,8 @@ class SiamJEPA(nn.Module):
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
         discrete=32,kl_scale=0.01,
-        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9):
+        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,
+        shuffle_teacher=False):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -239,6 +240,10 @@ class SiamJEPA(nn.Module):
         )
 
         self.norm_pix_loss = norm_pix_loss
+
+        # Random Shuffle Teacher (RST): see forward_encoder() below. Set before
+        # the EMA deep-copy so both branches carry the same setting.
+        self.shuffle_teacher = shuffle_teacher
 
         self.initialize_weights()
 
@@ -451,8 +456,7 @@ class SiamJEPA(nn.Module):
 
     def forward_encoder(self, x, mask_ratio):
         # forward_encoder is only ever called with mask_ratio=0 (full pass over
-        # the teacher/EMA branch); random_masking() shuffled the patch order even
-        # in that no-op case, so encoder output no longer matched grid position.
+        # the teacher/EMA branch).
         assert mask_ratio == 0, "forward_encoder no longer supports masking; call with mask_ratio=0"
 
         # embed patches
@@ -460,6 +464,21 @@ class SiamJEPA(nn.Module):
 
         # add pos embed w/o cls token
         x = x + self.pos_embed[:, 1:, :]
+
+        if self.shuffle_teacher:
+            # Random Shuffle Teacher (RST): randomly permute the patch tokens
+            # (independently per sample) before the transformer blocks see
+            # them. The positional embedding just added above still reflects
+            # each token's true grid position, so this breaks the
+            # correspondence between a token's position and its content --
+            # the teacher's output at slot i is now some other patch's
+            # representation. Predicting against this shuffled target (Sim-2)
+            # removes the shortcut of relying on spatial position and pushes
+            # the encoder toward semantic, position-invariant patch
+            # representations. Intended to be combined with a curriculum:
+            # train with --shuffle_teacher first, then continue without it
+            # (via --init_checkpoint) to restore spatial correspondence.
+            x, _, _ = self.random_masking(x, mask_ratio=0.0)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]

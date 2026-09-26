@@ -130,6 +130,13 @@ def get_args_parser():
 
     parser.add_argument('--ema',type=float,nargs=3,default=(0.99, 0.999,0.9999),metavar=('EMA_START', 'MIDDLE_START','EMA_END'),help='EMA momentum schedule (start,middle, end). e.g. 0.99 0.999 0.9999')
     parser.add_argument('--kl_scale', type=float, default=0.01,help='KL scale (default: 0.01)')
+    parser.add_argument('--shuffle_teacher', action='store_true',
+                        help='Random Shuffle Teacher (RST): randomly permute the '
+                             'teacher/EMA branch patch tokens before prediction, to '
+                             'encourage semantic (position-invariant) patch '
+                             'representations. For the semantic-to-spatial '
+                             'curriculum, train with this flag first, then continue '
+                             'a second run without it via --init_checkpoint.')
 
 
     return parser
@@ -145,8 +152,9 @@ def main(args):
         mr = "-".join(f"{m:g}" for m in args.mask_ratio)
         ema = "-".join(f"{e:g}" for e in args.ema)
         init_tag = "_init-phinetv2" if args.init_checkpoint else ""
+        rst_tag = "_rst" if args.shuffle_teacher else ""
         tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"
-               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}{init_tag}")
+               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}{rst_tag}{init_tag}")
         args.output_dir = exptrack.make_run_dir(
             args.output_dir, tag, git_info, misc.is_main_process(),
             extra={"args": vars(args)},
@@ -202,7 +210,7 @@ def main(args):
     )
     
     # define the model
-    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0])
+    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],shuffle_teacher=args.shuffle_teacher)
 
     model.to(device)
 

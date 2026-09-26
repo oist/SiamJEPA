@@ -20,15 +20,18 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 # backward pass, no 90-epoch loop), so this should finish in well under an
 # hour even on a congested queue.
 #
-#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth" run_knn_siamjepa.sh
+#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth" probes/run_knn_siamjepa.sh
 #
 #   # probe the EMA/teacher encoder instead of the student
-#   pjsub -x "FINETUNE=...,USE_EMA=1" run_knn_siamjepa.sh
+#   pjsub -x "FINETUNE=...,USE_EMA=1" probes/run_knn_siamjepa.sh
+#
+# Submit from the repo root (not from inside probes/) so relative paths like
+# OUTPUT_DIR resolve the same way as every other run_*.sh script.
 #
 # Every run lands in its own self-describing subdirectory under OUTPUT_DIR
 # (named after the checkpoint being evaluated; see util/experiment_tracking.py).
 # ------------------------------------------------------------------------------
-: "${FINETUNE:?Set FINETUNE to a checkpoint path, e.g. pjsub -x \"FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth\" run_knn_siamjepa.sh}"
+: "${FINETUNE:?Set FINETUNE to a checkpoint path, e.g. pjsub -x \"FINETUNE=./output_dir_siamjepa/.../checkpoint-200.pth\" probes/run_knn_siamjepa.sh}"
 : "${BATCH_SIZE:=512}"
 : "${MASTER_PORT:=29572}"
 : "${NPROC_PER_NODE:=4}"
@@ -52,7 +55,7 @@ echo "==================="
 torchrun \
   --nproc_per_node=$NPROC_PER_NODE \
   --master_port=$MASTER_PORT \
-  main_knn_siamjepa.py \
+  probes/main_knn_siamjepa.py \
   --output_dir $OUTPUT_DIR \
   --batch_size $BATCH_SIZE \
   --finetune "$FINETUNE" \

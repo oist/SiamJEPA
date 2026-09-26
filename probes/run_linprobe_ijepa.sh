@@ -16,10 +16,13 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 # 50 epochs with /10 step every 15, lr {0.01,0.05,0.001} x wd {5e-4,0} -- all
 # 12 heads trained in this one job.
 #
-#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-250.pth" run_linprobe_ijepa.sh
+#   pjsub -x "FINETUNE=./output_dir_siamjepa/.../checkpoint-250.pth" probes/run_linprobe_ijepa.sh
 #
 #   # resume a timed-out run (heads + optimizer are saved every epoch)
-#   pjsub -x "FINETUNE=...,RESUME_DIR=./output_dir_linprobe_ijepa/run<jobid>_..." run_linprobe_ijepa.sh
+#   pjsub -x "FINETUNE=...,RESUME_DIR=./output_dir_linprobe_ijepa/run<jobid>_..." probes/run_linprobe_ijepa.sh
+#
+# Submit from the repo root (not from inside probes/) so relative paths like
+# OUTPUT_DIR resolve the same way as every other run_*.sh script.
 # ------------------------------------------------------------------------------
 : "${FINETUNE:?Set FINETUNE to a checkpoint path}"
 : "${USE_EMA:=1}"
@@ -43,7 +46,7 @@ echo "==================="
 torchrun \
   --nproc_per_node=$NPROC_PER_NODE \
   --master_port=$MASTER_PORT \
-  main_linprobe_ijepa.py \
+  probes/main_linprobe_ijepa.py \
   --output_dir $OUTPUT_DIR \
   --batch_size $BATCH_SIZE \
   --accum_iter $ACCUM_ITER \

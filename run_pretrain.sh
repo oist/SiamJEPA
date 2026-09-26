@@ -37,6 +37,11 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   pjsub -x "EPOCHS=600" run_pretrain.sh
 #   pjsub -x "EPOCHS=600,RESUME=./output_dir_siamjepa/run.../checkpoint-NNN.pth" run_pretrain.sh
 #
+#   # Random Shuffle Teacher (RST) curriculum -- stage 1 (RST on), then stage 2
+#   # warm-started from stage 1's checkpoint with RST off:
+#   pjsub -x "EPOCHS=200,SHUFFLE_TEACHER=1" run_pretrain.sh
+#   pjsub -x "EPOCHS=250,INIT_CHECKPOINT=./output_dir_siamjepa/<stage-1-run>/checkpoint-199.pth" run_pretrain.sh
+#
 # Every run still lands in its own self-describing subdirectory under
 # OUTPUT_DIR (see util/experiment_tracking.py), so runs never overwrite
 # each other's checkpoints/logs regardless of which variables were set.
@@ -54,12 +59,19 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${INIT_CHECKPOINT:=}"
 : "${EPOCHS:=400}"
 : "${RESUME:=}"
+: "${SHUFFLE_TEACHER:=}"
+
+SHUFFLE_FLAG=""
+if [ -n "$SHUFFLE_TEACHER" ]; then
+  SHUFFLE_FLAG="--shuffle_teacher"
+fi
 
 echo "=== Run config ==="
 echo "KL_SCALE=$KL_SCALE  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
 echo "BATCH_SIZE=$BATCH_SIZE  ACCUM_ITER=$ACCUM_ITER  MASK_RATIO=$MASK_RATIO  EMA=$EMA"
 echo "OUTPUT_DIR=$OUTPUT_DIR  DATA_PATH=$DATA_PATH  MASTER_PORT=$MASTER_PORT"
 echo "INIT_CHECKPOINT=$INIT_CHECKPOINT  EPOCHS=$EPOCHS  RESUME=$RESUME"
+echo "SHUFFLE_TEACHER=$SHUFFLE_TEACHER"
 echo "==================="
 
 torchrun \
@@ -77,4 +89,5 @@ torchrun \
   --weight_decay $WEIGHT_DECAY \
   --epochs $EPOCHS \
   --resume "$RESUME" \
-  --init_checkpoint "$INIT_CHECKPOINT"
+  --init_checkpoint "$INIT_CHECKPOINT" \
+  $SHUFFLE_FLAG
