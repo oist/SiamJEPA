@@ -45,6 +45,10 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   # BF16_PREDICTOR=1 also runs the predictor in bf16 (only with bf16)
 #   pjsub -x "PRECISION=bf16" run_pretrain.sh
 #
+#   # ViT-L (does not fit 512/GPU: keep the effective batch with 256 x 8, or
+#   # GRAD_CKPT=1 to recompute encoder activations)
+#   pjsub -x "MODEL=siamjepa_vit_large_patch16,PRECISION=bf16,BATCH_SIZE=256,ACCUM_ITER=8" run_pretrain.sh
+#
 #   # view2 predictor placement: fixed by default (run dirs get "_v2fix");
 #   # LEGACY_VIEW2_RESTORE=1 reproduces runs made before the fix
 #   pjsub -x "LEGACY_VIEW2_RESTORE=1" run_pretrain.sh
@@ -69,6 +73,11 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${RESUME:=}"
 : "${SHUFFLE_TEACHER:=}"
 : "${PRECISION:=fp32}"
+: "${MODEL:=siamjepa_vit_base_patch16}"
+: "${GRAD_CKPT:=}"
+: "${NUM_WORKERS:=10}"
+: "${CLIP_GRAD:=3.0}"
+: "${WARMUP_EPOCHS:=40}"
 : "${BF16_PREDICTOR:=}"
 : "${LEGACY_VIEW2_RESTORE:=}"
 
@@ -77,6 +86,10 @@ if [ -n "$SHUFFLE_TEACHER" ]; then
   SHUFFLE_FLAG="--shuffle_teacher"
 fi
 BF16_PREDICTOR_FLAG=""
+GRAD_CKPT_FLAG=""
+if [ -n "$GRAD_CKPT" ]; then
+  GRAD_CKPT_FLAG="--grad_checkpointing"
+fi
 LEGACY_VIEW2_FLAG=""
 if [ -n "$LEGACY_VIEW2_RESTORE" ]; then
   LEGACY_VIEW2_FLAG="--legacy_view2_restore"
@@ -86,6 +99,7 @@ if [ -n "$BF16_PREDICTOR" ]; then
 fi
 
 echo "=== Run config ==="
+echo "MODEL=$MODEL  GRAD_CKPT=$GRAD_CKPT  NUM_WORKERS=$NUM_WORKERS  CLIP_GRAD=$CLIP_GRAD  WARMUP_EPOCHS=$WARMUP_EPOCHS"
 echo "KL_SCALE=$KL_SCALE  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
 echo "BATCH_SIZE=$BATCH_SIZE  ACCUM_ITER=$ACCUM_ITER  MASK_RATIO=$MASK_RATIO  EMA=$EMA"
 echo "OUTPUT_DIR=$OUTPUT_DIR  DATA_PATH=$DATA_PATH  MASTER_PORT=$MASTER_PORT"
@@ -97,6 +111,10 @@ torchrun \
   --nproc_per_node=4 \
   --master_port=$MASTER_PORT \
   main_pretrain_siamjepa.py \
+  --model $MODEL \
+  --num_workers $NUM_WORKERS \
+  --clip_grad $CLIP_GRAD \
+  --warmup_epochs $WARMUP_EPOCHS \
   --data_path $DATA_PATH \
   --output_dir $OUTPUT_DIR \
   --kl_scale=$KL_SCALE \
@@ -110,4 +128,4 @@ torchrun \
   --resume "$RESUME" \
   --init_checkpoint "$INIT_CHECKPOINT" \
   --precision $PRECISION \
-  $SHUFFLE_FLAG $BF16_PREDICTOR_FLAG $LEGACY_VIEW2_FLAG
+  $SHUFFLE_FLAG $BF16_PREDICTOR_FLAG $LEGACY_VIEW2_FLAG $GRAD_CKPT_FLAG

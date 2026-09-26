@@ -23,6 +23,7 @@ from util.pos_embed import get_2d_sincos_pos_embed
 
 import copy
 import torch.distributions as td
+import torch.utils.checkpoint
 import torch.nn.functional as F
 
 def ema_model(modelA, modelB, m):
@@ -52,7 +53,7 @@ class projection_MLP(nn.Module):
         )
         self.layer3 = nn.Sequential(
             nn.Linear(hidden_dim, out_dim),
-            nn.BatchNorm1d(hidden_dim)
+            nn.BatchNorm1d(out_dim)
         )
         self.num_layers = 3
     def set_layers(self, num_layers):
@@ -241,7 +242,9 @@ class SiamJEPA(nn.Module):
             nn.Linear(embed_dim * 2, stoch_size),
         )
 
-        self.projector = projection_MLP(embed_dim)
+        # width follows the encoder (its output feeds ca3 = Linear(embed_dim, embed_dim));
+        # identical to the old fixed 768/768 for ViT-B
+        self.projector = projection_MLP(embed_dim, hidden_dim=embed_dim, out_dim=embed_dim)
         self.ca3 = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
         )
@@ -283,6 +286,11 @@ class SiamJEPA(nn.Module):
         self.kl_freebit=kl_freebit
 
         self.mask_ratio=mask_ratio
+
+        # recompute the student encoder blocks in backward instead of storing
+        # their activations (less memory, ~30% more compute); set from the
+        # training script, not saved in checkpoints
+        self.grad_checkpointing = False
 
 
     def initialize_weights(self):
@@ -455,7 +463,10 @@ class SiamJEPA(nn.Module):
         # identical to running them separately -- just fewer, larger kernels)
         x12 = torch.cat((x1, x2), dim=0)
         for blk in self.blocks:
-            x12 = blk(x12)
+            if self.grad_checkpointing and self.training:
+                x12 = torch.utils.checkpoint.checkpoint(blk, x12, use_reentrant=False)
+            else:
+                x12 = blk(x12)
         x12 = self.norm(x12)
         x1, x2 = x12.chunk(2, dim=0)
 
@@ -761,13 +772,17 @@ def siamjepa_vit_base_patch16_dec512d8b(**kwargs):
     return model
 
 
-# ViT-Large and ViT-Huge support is still under construction.
-#def siamjepa_vit_large_patch16_dec512d8b(**kwargs):
-#    model = PhiNets(
-#        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
-#        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-#        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-#    return model
+def siamjepa_vit_large_patch16_dec1024d1b(**kwargs):
+    # true ViT-L/16 encoder (24 blocks); predictor mirrors ViT-B's
+    # (one CSABlock at the encoder width)
+    model = SiamJEPA(
+        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+        decoder_embed_dim=1024, decoder_depth=1, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+
+# ViT-Huge support is still under construction.
 
 
 #def siamjepa_vit_huge_patch14_dec512d8b(**kwargs):
@@ -779,6 +794,6 @@ def siamjepa_vit_base_patch16_dec512d8b(**kwargs):
 
 
 # set recommended archs
-siamjepa_vit_base_patch16 = siamjepa_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-#siamjepa_vit_large_patch16 = siamjepa_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
+siamjepa_vit_base_patch16 = siamjepa_vit_base_patch16_dec512d8b  # decoder: 768 dim, 1 block (name kept for checkpoints/scripts)
+siamjepa_vit_large_patch16 = siamjepa_vit_large_patch16_dec1024d1b  # decoder: 1024 dim, 1 block
 #siamjepa_vit_huge_patch14 = siamjepa_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks

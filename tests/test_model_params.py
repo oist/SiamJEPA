@@ -18,12 +18,48 @@ import models_siamjepa  # noqa: E402
 import timm.optim.optim_factory as optim_factory  # noqa: E402
 
 
-def small_model(**kwargs):
-    # embed_dim stays 768 (projection_MLP's output width is fixed at 768)
+def small_model(embed_dim=768, **kwargs):
     return models_siamjepa.SiamJEPA(
-        embed_dim=768, depth=1, num_heads=12,
-        decoder_embed_dim=768, decoder_depth=1, decoder_num_heads=12,
+        embed_dim=embed_dim, depth=2, num_heads=12,
+        decoder_embed_dim=embed_dim, decoder_depth=1, decoder_num_heads=12,
         kl_scale=0.01, beta=0.99, mask_ratio=0.75, **kwargs)
+
+
+def test_vit_large_builds_and_runs():
+    torch.manual_seed(0)
+    model = models_siamjepa.siamjepa_vit_large_patch16(kl_scale=0.01, beta=0.99, mask_ratio=0.75)
+    n_enc = sum(p.numel() for p in model.ema_model.parameters())
+    assert 300e6 < n_enc < 310e6, f"ViT-L/16 encoder should be ~304M params, got {n_enc / 1e6:.1f}M"
+    assert len(model.blocks) == 24 and model.projector.layer3[0].out_features == 1024
+    loss, *_ = model(torch.randn(2, 3, 224, 224))
+    loss.backward()
+    assert torch.isfinite(loss)
+
+
+def test_projector_follows_embed_dim():
+    # the projector output feeds ca3 = Linear(embed_dim, embed_dim), so any
+    # width other than 768 used to crash
+    torch.manual_seed(0)
+    loss, *_ = small_model(embed_dim=384)(torch.randn(2, 3, 224, 224))
+    assert torch.isfinite(loss)
+
+
+def test_grad_checkpointing_is_exact():
+    outs = []
+    for ckpt in (False, True):
+        torch.manual_seed(0)
+        model = small_model().train()
+        model.grad_checkpointing = ckpt
+        torch.manual_seed(1)
+        loss, *_ = model(torch.randn(2, 3, 224, 224))
+        loss.backward()
+        outs.append((loss.detach(), {n: p.grad.clone() for n, p in model.named_parameters()
+                                     if p.grad is not None}))
+    (l0, g0), (l1, g1) = outs
+    assert torch.allclose(l0, l1, atol=1e-6), (l0.item(), l1.item())
+    assert set(g0) == set(g1)
+    for n in g0:
+        assert torch.allclose(g0[n], g1[n], rtol=1e-4, atol=1e-6), n
 
 
 def test_all_trainable_params_get_grads():
@@ -79,7 +115,7 @@ def _copy_without_ema(model):
 
 def test_legacy_checkpoint_resume():
     torch.manual_seed(0)
-    old = _LegacySiamJEPA(embed_dim=768, depth=1, num_heads=12, decoder_embed_dim=768,
+    old = _LegacySiamJEPA(embed_dim=768, depth=2, num_heads=12, decoder_embed_dim=768,
                           decoder_depth=1, decoder_num_heads=12, kl_scale=0.01,
                           beta=0.99, mask_ratio=0.75)
     old_opt = torch.optim.AdamW(optim_factory.add_weight_decay(old, 0.1), lr=1e-3)

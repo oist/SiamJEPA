@@ -20,8 +20,8 @@ MASK_RATIO = 0.75
 
 
 def small_model(**kwargs):
-    # embed_dim stays 768: projection_MLP's output width is fixed at 768 and
-    # feeds ca3 (Linear(embed_dim, embed_dim)); depth is cut to keep this fast
+    # ViT-B width (the tagged-token checks below assume D=768); depth is cut
+    # to keep this fast
     return models_siamjepa.SiamJEPA(
         embed_dim=768, depth=1, num_heads=12,
         decoder_embed_dim=768, decoder_depth=1, decoder_num_heads=12,

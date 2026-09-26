@@ -24,6 +24,7 @@ def get_args():
     p.add_argument('--accum_iter', default=4, type=int)
     p.add_argument('--precision', default='fp32', choices=['fp32', 'tf32', 'bf16'])
     p.add_argument('--bf16_predictor', action='store_true')
+    p.add_argument('--grad_checkpointing', action='store_true')
     p.add_argument('--warmup', default=8, type=int, help='micro-steps not timed')
     p.add_argument('--iters', default=24, type=int, help='micro-steps timed')
     p.add_argument('--tag', default='')
@@ -60,6 +61,8 @@ def main():
         for m in model.modules():
             if isinstance(m, models_siamjepa.CSABlock):
                 m.force_fp32 = False
+    if args.grad_checkpointing:
+        model.grad_checkpointing = True
     model.to(device)
     n_student = sum(p.numel() for n, p in model.named_parameters() if not n.startswith('ema_model.'))
     n_ema = sum(p.numel() for p in model.ema_model.parameters())
@@ -112,6 +115,7 @@ def main():
         print(f"RESULT tag={args.tag or args.precision} repo={os.path.basename(os.path.abspath(args.repo))} "
               f"model={args.model} bs={args.batch_size}x{args.accum_iter}x{world} "
               f"precision={args.precision} bf16_predictor={args.bf16_predictor} "
+              f"grad_ckpt={args.grad_checkpointing} "
               f"s/it={dt:.4f} epoch_min={dt * its_per_epoch / 60:.1f} max_mem_GiB={mem:.1f} "
               f"params_student={n_student / 1e6:.1f}M params_ema={n_ema / 1e6:.1f}M "
               f"last_loss={losses[-1]:.4f}", flush=True)

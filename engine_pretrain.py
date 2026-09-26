@@ -81,7 +81,7 @@ def train_one_epoch_siamjepa(model: torch.nn.Module,
             loss = loss / accum_iter
             loss_scaler(
                 loss, optimizer, parameters=model.parameters(),
-                clip_grad=3.0, update_grad=True
+                clip_grad=args.clip_grad, update_grad=True
             )
             optimizer.zero_grad(set_to_none=True)
 
@@ -120,7 +120,7 @@ def train_one_epoch_siamjepa(model: torch.nn.Module,
                 loss = loss / accum_iter
                 loss_scaler(
                     loss, optimizer, parameters=model.parameters(),
-                    clip_grad=3.0, update_grad=False
+                    clip_grad=args.clip_grad, update_grad=False
                 )
 
             cur_beta = model_without_ddp.beta  # ログ用

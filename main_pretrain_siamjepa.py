@@ -74,6 +74,9 @@ def get_args_parser():
                         help='fp32: plain fp32 matmuls (the original setting); tf32: fp32 with '
                              'TF32 tensor-core matmuls; bf16: bf16 autocast for the encoders '
                              '(+TF32 for whatever stays fp32). Losses/KL are always fp32.')
+    parser.add_argument('--grad_checkpointing', action='store_true',
+                        help='recompute student encoder activations in backward (saves memory, '
+                             'costs compute); e.g. for ViT-L at a larger per-GPU batch')
     parser.add_argument('--bf16_predictor', action='store_true',
                         help='with --precision bf16, also run the predictor (CSABlock) in bf16 '
                              'instead of its default fp32 islands')
@@ -96,6 +99,8 @@ def get_args_parser():
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
+    parser.add_argument('--clip_grad', type=float, default=3.0,
+                        help='gradient-norm clipping threshold (default 3.0 = earlier runs)')
     parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
                         help='epochs to warmup LR')
 
@@ -164,6 +169,8 @@ def main(args):
         ema = "-".join(f"{e:g}" for e in args.ema)
         init_tag = "_init-phinetv2" if args.init_checkpoint else ""
         rst_tag = "_rst" if args.shuffle_teacher else ""
+        if args.model != 'siamjepa_vit_base_patch16':
+            rst_tag += "_" + args.model.replace('siamjepa_', '')
         if not args.legacy_view2_restore:
             rst_tag += "_v2fix"
         if args.precision != 'fp32':
@@ -235,6 +242,8 @@ def main(args):
         for m in model.modules():
             if isinstance(m, models_siamjepa.CSABlock):
                 m.force_fp32 = False
+
+    model.grad_checkpointing = args.grad_checkpointing
 
     model.to(device)
 
