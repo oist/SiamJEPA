@@ -40,6 +40,7 @@ def train_one_epoch_siamjepa(model: torch.nn.Module,
 
     model_without_ddp = model.module if hasattr(model, "module") else model
 
+    # [post-paper] --precision bf16: the paper's runs used fp32 throughout (the default).
     # --precision bf16: bf16 autocast for the encoders/predictor; losses and
     # the KL term are still computed in fp32 inside the model
     use_bf16 = getattr(args, 'precision', 'fp32') == 'bf16'

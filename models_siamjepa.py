@@ -11,6 +11,14 @@
 # --------------------------------------------------------
 
 
+# Note on changes made after the paper: the paper's results were produced with
+# the implementation at commit 8ad5771. Later changes marked "[post-paper]"
+# below (speed-ups, an encoder-only EMA teacher, removal of never-used modules)
+# do not change what is computed in the default fp32 setting, except that the
+# random masks are drawn from a different random stream (same distribution);
+# see bench/check_speedup_equivalence.py. The view2 predictor placement fix is
+# opt-in (fix_view2_restore, default off = the paper setting).
+
 from functools import partial
 
 import torch
@@ -172,9 +180,12 @@ def chk(name, t):
 class SiamJEPA(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """
-    # submodules / parameters kept in the (encoder-only) EMA teacher
+    # submodules / parameters kept in the (encoder-only) EMA teacher.
+    # [post-paper] the paper's runs kept a full copy of the model as the EMA
+    # teacher; only its encoder is ever used, so the teacher output is identical.
     EMA_ENCODER_KEYS = ('patch_embed', 'cls_token', 'pos_embed', 'blocks', 'norm')
-    # never-used modules removed from the model; older checkpoints still carry them
+    # never-used modules removed from the model; older checkpoints still carry them.
+    # [post-paper] they existed (without being used in forward()) in the paper's runs.
     REMOVED_MODULES = ('decoder_embed', 'decoder_pred_latent', 'decoder_pred', 'decoder_embed_mae')
 
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
@@ -183,7 +194,7 @@ class SiamJEPA(nn.Module):
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
         discrete=32,kl_scale=0.01,
         kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,
-        shuffle_teacher=False, fix_view2_restore=True):
+        shuffle_teacher=False, fix_view2_restore=False):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -255,11 +266,11 @@ class SiamJEPA(nn.Module):
         # the EMA deep-copy so both branches carry the same setting.
         self.shuffle_teacher = shuffle_teacher
 
-        # Bug fix: the view2 predictor used to reuse view1's ids_restore, which
-        # puts view2's context tokens in view1's slots (so they get view1's
-        # decoder_pos_embed). With this on (default), view2 gets its own
+        # Opt-in fix (default off = the behaviour used for the paper's results):
+        # by default the view2 predictor reuses view1's ids_restore, which puts
+        # view2's context tokens in view1's slots (so they get view1's
+        # decoder_pos_embed). With fix_view2_restore=True, view2 gets its own
         # ids_restore. Target slots / the loss are the same either way.
-        # fix_view2_restore=False reproduces runs made before the fix.
         self.fix_view2_restore = fix_view2_restore
 
         self.initialize_weights()
@@ -371,6 +382,8 @@ class SiamJEPA(nn.Module):
         block_size = int(block_area ** 0.5)
         block_size = max(1, block_size)
 
+        # [post-paper] batched over samples; the paper's runs used a per-sample
+        # Python loop with the same distribution but a different random stream.
         # Batched over samples (formerly a per-sample Python loop): one random
         # block_size x block_size square per sample is excluded from both
         # views; the patches outside it are put in uniformly random order
@@ -458,6 +471,7 @@ class SiamJEPA(nn.Module):
         x1 = torch.cat((cls_tokens, x1), dim=1)
         x2 = torch.cat((cls_tokens, x2), dim=1)
 
+        # [post-paper] (the paper's runs applied the blocks to x1 and x2 separately)
         # apply Transformer blocks to both views as one 2N batch (both views
         # have the same length, and every op is per-sample, so this is
         # identical to running them separately -- just fewer, larger kernels)

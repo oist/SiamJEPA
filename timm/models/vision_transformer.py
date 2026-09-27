@@ -161,6 +161,8 @@ class Attention(nn.Module):
             qkv[2],
         )  # make torchscript happy (cannot use tensor as tuple)
 
+        # [post-paper, SiamJEPA] replaced the explicit softmax(q k^T) v used for
+        # the paper's runs; identical up to floating-point rounding.
         # fused kernel (flash / memory-efficient attention); same math as
         # softmax(q k^T * scale) v, without materializing the attention matrix
         x = F.scaled_dot_product_attention(
@@ -215,6 +217,7 @@ class CrossAttention(nn.Module):
             kv[0],
             kv[1],
         )  # make torchscript happy (cannot use tensor as tuple)
+        # [post-paper, SiamJEPA] fused attention as in Attention above
         if src_mask is None:
             x = F.scaled_dot_product_attention(
                 q, k, v,

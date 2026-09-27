@@ -49,9 +49,9 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   # GRAD_CKPT=1 to recompute encoder activations)
 #   pjsub -x "MODEL=siamjepa_vit_large_patch16,PRECISION=bf16,BATCH_SIZE=256,ACCUM_ITER=8" run_pretrain.sh
 #
-#   # view2 predictor placement: fixed by default (run dirs get "_v2fix");
-#   # LEGACY_VIEW2_RESTORE=1 reproduces runs made before the fix
-#   pjsub -x "LEGACY_VIEW2_RESTORE=1" run_pretrain.sh
+#   # view2 predictor placement fix (opt-in; default = the paper setting;
+#   # run dirs get "_v2fix")
+#   pjsub -x "FIX_VIEW2_RESTORE=1" run_pretrain.sh
 #   pjsub -x "EPOCHS=250,INIT_CHECKPOINT=./output_dir_siamjepa/<stage-1-run>/checkpoint-199.pth" run_pretrain.sh
 #
 # Every run still lands in its own self-describing subdirectory under
@@ -79,7 +79,7 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${CLIP_GRAD:=3.0}"
 : "${WARMUP_EPOCHS:=40}"
 : "${BF16_PREDICTOR:=}"
-: "${LEGACY_VIEW2_RESTORE:=}"
+: "${FIX_VIEW2_RESTORE:=}"
 
 SHUFFLE_FLAG=""
 if [ -n "$SHUFFLE_TEACHER" ]; then
@@ -90,9 +90,9 @@ GRAD_CKPT_FLAG=""
 if [ -n "$GRAD_CKPT" ]; then
   GRAD_CKPT_FLAG="--grad_checkpointing"
 fi
-LEGACY_VIEW2_FLAG=""
-if [ -n "$LEGACY_VIEW2_RESTORE" ]; then
-  LEGACY_VIEW2_FLAG="--legacy_view2_restore"
+FIX_VIEW2_FLAG=""
+if [ -n "$FIX_VIEW2_RESTORE" ]; then
+  FIX_VIEW2_FLAG="--fix_view2_restore"
 fi
 if [ -n "$BF16_PREDICTOR" ]; then
   BF16_PREDICTOR_FLAG="--bf16_predictor"
@@ -104,7 +104,7 @@ echo "KL_SCALE=$KL_SCALE  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
 echo "BATCH_SIZE=$BATCH_SIZE  ACCUM_ITER=$ACCUM_ITER  MASK_RATIO=$MASK_RATIO  EMA=$EMA"
 echo "OUTPUT_DIR=$OUTPUT_DIR  DATA_PATH=$DATA_PATH  MASTER_PORT=$MASTER_PORT"
 echo "INIT_CHECKPOINT=$INIT_CHECKPOINT  EPOCHS=$EPOCHS  RESUME=$RESUME"
-echo "SHUFFLE_TEACHER=$SHUFFLE_TEACHER  PRECISION=$PRECISION  BF16_PREDICTOR=$BF16_PREDICTOR  LEGACY_VIEW2_RESTORE=$LEGACY_VIEW2_RESTORE"
+echo "SHUFFLE_TEACHER=$SHUFFLE_TEACHER  PRECISION=$PRECISION  BF16_PREDICTOR=$BF16_PREDICTOR  FIX_VIEW2_RESTORE=$FIX_VIEW2_RESTORE"
 echo "==================="
 
 torchrun \
@@ -128,4 +128,4 @@ torchrun \
   --resume "$RESUME" \
   --init_checkpoint "$INIT_CHECKPOINT" \
   --precision $PRECISION \
-  $SHUFFLE_FLAG $BF16_PREDICTOR_FLAG $LEGACY_VIEW2_FLAG $GRAD_CKPT_FLAG
+  $SHUFFLE_FLAG $BF16_PREDICTOR_FLAG $FIX_VIEW2_FLAG $GRAD_CKPT_FLAG

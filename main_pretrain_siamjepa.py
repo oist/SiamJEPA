@@ -71,7 +71,7 @@ def get_args_parser():
     parser.add_argument('--mask_ratio',type=float,nargs=3,default=(0.75, 0.75, 0.75),metavar=('First mask', 'Second mask', 'Third mask'),help='Masking ratio (percentage of removed patches).')
 
     parser.add_argument('--precision', default='fp32', choices=['fp32', 'tf32', 'bf16'],
-                        help='fp32: plain fp32 matmuls (the original setting); tf32: fp32 with '
+                        help='fp32: plain fp32 matmuls (the setting used for the paper); tf32: fp32 with '
                              'TF32 tensor-core matmuls; bf16: bf16 autocast for the encoders '
                              '(+TF32 for whatever stays fp32). Losses/KL are always fp32.')
     parser.add_argument('--grad_checkpointing', action='store_true',
@@ -80,10 +80,10 @@ def get_args_parser():
     parser.add_argument('--bf16_predictor', action='store_true',
                         help='with --precision bf16, also run the predictor (CSABlock) in bf16 '
                              'instead of its default fp32 islands')
-    parser.add_argument('--legacy_view2_restore', action='store_true',
-                        help='reproduce runs made before the view2 predictor fix: view2 reuses '
-                             'view1\'s ids_restore, so its context tokens sit in view1\'s slots '
-                             '(default: each view uses its own ids_restore)')
+    parser.add_argument('--fix_view2_restore', action='store_true',
+                        help='place view2 context tokens at their own positions in the predictor '
+                             '(default off = the paper setting, where view2 reuses view1\'s '
+                             'ids_restore and its context tokens sit in view1\'s slots)')
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=False)
@@ -171,7 +171,7 @@ def main(args):
         rst_tag = "_rst" if args.shuffle_teacher else ""
         if args.model != 'siamjepa_vit_base_patch16':
             rst_tag += "_" + args.model.replace('siamjepa_', '')
-        if not args.legacy_view2_restore:
+        if args.fix_view2_restore:
             rst_tag += "_v2fix"
         if args.precision != 'fp32':
             rst_tag += f"_{args.precision}" + ("-pred" if args.bf16_predictor else "")
@@ -235,7 +235,7 @@ def main(args):
     )
     
     # define the model
-    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],shuffle_teacher=args.shuffle_teacher,fix_view2_restore=not args.legacy_view2_restore)
+    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],shuffle_teacher=args.shuffle_teacher,fix_view2_restore=args.fix_view2_restore)
 
     if args.bf16_predictor:
         assert args.precision == 'bf16', "--bf16_predictor requires --precision bf16"

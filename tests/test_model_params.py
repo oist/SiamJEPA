@@ -63,7 +63,7 @@ def test_grad_checkpointing_is_exact():
 
 
 def test_all_trainable_params_get_grads():
-    for kwargs in ({}, {'fix_view2_restore': False}, {'shuffle_teacher': True}):
+    for kwargs in ({}, {'fix_view2_restore': True}, {'shuffle_teacher': True}):
         torch.manual_seed(0)
         model = small_model(**kwargs).train()
         loss, *_ = model(torch.randn(4, 3, 224, 224))

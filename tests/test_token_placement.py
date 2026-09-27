@@ -97,17 +97,17 @@ def _placement_ok(slots, keep):
 
 def test_each_view_placed_at_its_own_positions():
     torch.manual_seed(0)
-    (slots1, slots2), masks = _predictor_inputs(small_model())
+    (slots1, slots2), masks = _predictor_inputs(small_model(fix_view2_restore=True))
     assert _placement_ok(slots1, masks['keep1']), "view1 tokens not at their own grid slots"
     assert _placement_ok(slots2, masks['keep2']), "view2 tokens not at their own grid slots"
 
 
-def test_legacy_mode_reproduces_old_view2_placement():
-    # fix_view2_restore=False is kept only to reproduce pre-fix runs: view2's
-    # tokens land in view1's slots. If this starts passing _placement_ok, the
-    # legacy switch no longer does what its name says.
+def test_default_mode_keeps_paper_view2_placement():
+    # the default (fix_view2_restore=False) is the setting used for the paper:
+    # view2's tokens land in view1's slots. If this starts passing
+    # _placement_ok, the default no longer reproduces the paper.
     torch.manual_seed(0)
-    (slots1, slots2), masks = _predictor_inputs(small_model(fix_view2_restore=False))
+    (slots1, slots2), masks = _predictor_inputs(small_model())
     assert _placement_ok(slots1, masks['keep1'])
     assert not _placement_ok(slots2, masks['keep2'])
     assert bool((slots2[masks['keep1']] > 0).all()), "legacy: view2 tokens should sit in view1 slots"
