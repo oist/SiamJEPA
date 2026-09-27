@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+logs/
+output_dir_siamjepa/
+output_dir_linprobe/
+output_dir_knn/
+output_dir_posprobe/
+output_dir_pca/
+output_dir/
+*.out
+elastic_err_*.json
+results*.csv
+output_dir_linprobe_ijepa/
+
+# Exploratory retrieval experiment -- not used in the paper, excluded from
+# the public release.
+main_cls_retrieval.py
+models_siamjepa_retrieval.py
+run_cls_retrieval_cpu.sh
+output_dir_clsret/

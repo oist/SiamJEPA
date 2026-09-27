@@ -11,6 +11,14 @@
 # --------------------------------------------------------
 
 
+# Note on changes made after the paper: the paper's results were produced with
+# the implementation at commit 8ad5771. Later changes marked "[post-paper]"
+# below (speed-ups, an encoder-only EMA teacher, removal of never-used modules)
+# do not change what is computed in the default fp32 setting, except that the
+# random masks are drawn from a different random stream (same distribution);
+# see bench/check_speedup_equivalence.py. The view2 predictor placement fix is
+# opt-in (fix_view2_restore, default off = the paper setting).
+
 from functools import partial
 
 import torch
@@ -23,6 +31,7 @@ from util.pos_embed import get_2d_sincos_pos_embed
 
 import copy
 import torch.distributions as td
+import torch.utils.checkpoint
 import torch.nn.functional as F
 
 def ema_model(modelA, modelB, m):
@@ -52,7 +61,7 @@ class projection_MLP(nn.Module):
         )
         self.layer3 = nn.Sequential(
             nn.Linear(hidden_dim, out_dim),
-            nn.BatchNorm1d(hidden_dim)
+            nn.BatchNorm1d(out_dim)
         )
         self.num_layers = 3
     def set_layers(self, num_layers):
@@ -121,9 +130,17 @@ class CSABlock(nn.Module):
         )
         # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+        # Run this block in fp32 even under bf16 autocast (the historical,
+        # conservative setting). Set False to let the predictor run in bf16.
+        self.force_fp32 = True
 
     def forward(self, x, kvx, src_mask=None):
-        
+        if not self.force_fp32:
+            x = x + self.drop_path(self.cattn(self.norm1(x), self.norm_kv1(kvx), src_mask=src_mask))
+            x = x + self.drop_path(self.attn(self.norm3(x)))
+            x = x + self.drop_path(self.mlp2(self.norm4(x)))
+            return x
+
         with torch.cuda.amp.autocast(enabled=False):
             x_n  = self.norm1(x.float())
             kv_n = self.norm_kv1(kvx.float())
@@ -163,12 +180,21 @@ def chk(name, t):
 class SiamJEPA(nn.Module):
     """ Masked Autoencoder with VisionTransformer backbone
     """
+    # submodules / parameters kept in the (encoder-only) EMA teacher.
+    # [post-paper] the paper's runs kept a full copy of the model as the EMA
+    # teacher; only its encoder is ever used, so the teacher output is identical.
+    EMA_ENCODER_KEYS = ('patch_embed', 'cls_token', 'pos_embed', 'blocks', 'norm')
+    # never-used modules removed from the model; older checkpoints still carry them.
+    # [post-paper] they existed (without being used in forward()) in the paper's runs.
+    REMOVED_MODULES = ('decoder_embed', 'decoder_pred_latent', 'decoder_pred', 'decoder_embed_mae')
+
     def __init__(self, img_size=224, patch_size=16, in_chans=3,
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
         discrete=32,kl_scale=0.01,
-        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9):
+        kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,
+        shuffle_teacher=False, fix_view2_restore=False):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -187,8 +213,6 @@ class SiamJEPA(nn.Module):
 
         # --------------------------------------------------------------------------
         # SiamJEPA decoder (predictor) specifics
-        self.decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
-
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
@@ -208,14 +232,10 @@ class SiamJEPA(nn.Module):
         )
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
-        self.decoder_pred_latent = nn.Linear(decoder_embed_dim, embed_dim)
-        self.decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True) # decoder to patch
 
         stoch_size = stoch * discrete if discrete != 0 else stoch * 2
-        self.decoder_embed_mae = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.decoder_embed_deter = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
         self.decoder_embed_stoch = nn.Linear(stoch_size, decoder_embed_dim, bias=True)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
 
         # Posterior takes both src_h and tgt_h
         # Thus it has embed_dim * 2 as an input dimension
@@ -233,17 +253,39 @@ class SiamJEPA(nn.Module):
             nn.Linear(embed_dim * 2, stoch_size),
         )
 
-        self.projector = projection_MLP(embed_dim)
+        # width follows the encoder (its output feeds ca3 = Linear(embed_dim, embed_dim));
+        # identical to the old fixed 768/768 for ViT-B
+        self.projector = projection_MLP(embed_dim, hidden_dim=embed_dim, out_dim=embed_dim)
         self.ca3 = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
         )
 
         self.norm_pix_loss = norm_pix_loss
 
+        # Random Shuffle Teacher (RST): see forward_encoder() below. Set before
+        # the EMA deep-copy so both branches carry the same setting.
+        self.shuffle_teacher = shuffle_teacher
+
+        # Opt-in fix (default off = the behaviour used for the paper's results):
+        # by default the view2 predictor reuses view1's ids_restore, which puts
+        # view2's context tokens in view1's slots (so they get view1's
+        # decoder_pos_embed). With fix_view2_restore=True, view2 gets its own
+        # ids_restore. Target slots / the loss are the same either way.
+        self.fix_view2_restore = fix_view2_restore
+
         self.initialize_weights()
 
         self.beta=beta
         self.ema_model = copy.deepcopy(self)
+        # The teacher is only ever used through forward_encoder(), so keep
+        # just the encoder in the EMA copy (drops the predictor, posterior/
+        # prior heads, projector, ... -- less memory and a cheaper EMA update).
+        for name in list(self.ema_model._modules):
+            if name not in self.EMA_ENCODER_KEYS:
+                delattr(self.ema_model, name)
+        for name in list(self.ema_model._parameters):
+            if name not in self.EMA_ENCODER_KEYS:
+                delattr(self.ema_model, name)
         self.ema_model.eval()   # ← train() ではなく eval()
         for p in self.ema_model.parameters():
             p.requires_grad = False
@@ -255,6 +297,11 @@ class SiamJEPA(nn.Module):
         self.kl_freebit=kl_freebit
 
         self.mask_ratio=mask_ratio
+
+        # recompute the student encoder blocks in backward instead of storing
+        # their activations (less memory, ~30% more compute); set from the
+        # training script, not saved in checkpoints
+        self.grad_checkpointing = False
 
 
     def initialize_weights(self):
@@ -335,42 +382,26 @@ class SiamJEPA(nn.Module):
         block_size = int(block_area ** 0.5)
         block_size = max(1, block_size)
 
-        all_ids = torch.arange(L, device=device)
-        ids_shuffle_list = []
+        # [post-paper] batched over samples; the paper's runs used a per-sample
+        # Python loop with the same distribution but a different random stream.
+        # Batched over samples (formerly a per-sample Python loop): one random
+        # block_size x block_size square per sample is excluded from both
+        # views; the patches outside it are put in uniformly random order
+        # (argsort of iid noise), and the first 2*len_keep become the keep
+        # sets of view1/view2. Block patches get noise >= 1, so they always
+        # sort after every outside patch.
+        top = torch.randint(0, H - block_size + 1, (N, 1, 1), device=device)
+        left = torch.randint(0, W - block_size + 1, (N, 1, 1), device=device)
+        rows = torch.arange(H, device=device).view(1, H, 1)
+        cols = torch.arange(W, device=device).view(1, 1, W)
+        is_block = ((rows >= top) & (rows < top + block_size)
+                    & (cols >= left) & (cols < left + block_size)).reshape(N, L)
 
-        for n in range(N):
-            top = torch.randint(0, H - block_size + 1, (1,), device=device)
-            left = torch.randint(0, W - block_size + 1, (1,), device=device)
+        noise = torch.rand(N, L, device=device) + is_block.float()
 
-            yy, xx = torch.meshgrid(
-                torch.arange(block_size, device=device),
-                torch.arange(block_size, device=device),
-                indexing="ij"
-            )
-
-            block_ids = ((top + yy) * W + (left + xx)).reshape(-1)
-
-            is_block = torch.zeros(L, dtype=torch.bool, device=device)
-            is_block[block_ids] = True
-
-            outside_ids = all_ids[~is_block]
-            outside_ids = outside_ids[torch.randperm(outside_ids.numel(), device=device)]
-
-            # keep に使うパッチ
-            keep_ids = outside_ids[:2 * len_keep]
-
-            # keep に使わない余りパッチ
-            rest_ids = outside_ids[2 * len_keep:]
-
-            block_ids = block_ids[torch.randperm(block_ids.numel(), device=device)]
-            rest_ids = rest_ids[torch.randperm(rest_ids.numel(), device=device)]
-
-            # 先頭 2*len_keep だけが view1/view2 に使われる
-            # それ以降は両方から mask される
-            ids_shuffle = torch.cat([keep_ids, rest_ids, block_ids], dim=0)
-            ids_shuffle_list.append(ids_shuffle)
-
-        ids_shuffle = torch.stack(ids_shuffle_list, dim=0)
+        # 先頭 2*len_keep だけが view1/view2 に使われる
+        # それ以降は両方から mask される
+        ids_shuffle = torch.argsort(noise, dim=1)
         ids_restore = torch.argsort(ids_shuffle, dim=1)
 
         ids_keep1 = ids_shuffle[:, :len_keep]
@@ -440,24 +471,46 @@ class SiamJEPA(nn.Module):
         x1 = torch.cat((cls_tokens, x1), dim=1)
         x2 = torch.cat((cls_tokens, x2), dim=1)
 
-        # apply Transformer blocks
+        # [post-paper] (the paper's runs applied the blocks to x1 and x2 separately)
+        # apply Transformer blocks to both views as one 2N batch (both views
+        # have the same length, and every op is per-sample, so this is
+        # identical to running them separately -- just fewer, larger kernels)
+        x12 = torch.cat((x1, x2), dim=0)
         for blk in self.blocks:
-            x1 = blk(x1)
-            x2 = blk(x2)
-        x1 = self.norm(x1)
-        x2 = self.norm(x2)
+            if self.grad_checkpointing and self.training:
+                x12 = torch.utils.checkpoint.checkpoint(blk, x12, use_reentrant=False)
+            else:
+                x12 = blk(x12)
+        x12 = self.norm(x12)
+        x1, x2 = x12.chunk(2, dim=0)
 
         return x1, x2, mask1, mask2, ids_restore
 
     def forward_encoder(self, x, mask_ratio):
+        # forward_encoder is only ever called with mask_ratio=0 (full pass over
+        # the teacher/EMA branch).
+        assert mask_ratio == 0, "forward_encoder no longer supports masking; call with mask_ratio=0"
+
         # embed patches
         x = self.patch_embed(x)
 
         # add pos embed w/o cls token
         x = x + self.pos_embed[:, 1:, :]
 
-        # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        if self.shuffle_teacher:
+            # Random Shuffle Teacher (RST): randomly permute the patch tokens
+            # (independently per sample) before the transformer blocks see
+            # them. The positional embedding just added above still reflects
+            # each token's true grid position, so this breaks the
+            # correspondence between a token's position and its content --
+            # the teacher's output at slot i is now some other patch's
+            # representation. Predicting against this shuffled target (Sim-2)
+            # removes the shortcut of relying on spatial position and pushes
+            # the encoder toward semantic, position-invariant patch
+            # representations. Intended to be combined with a curriculum:
+            # train with --shuffle_teacher first, then continue without it
+            # (via --init_checkpoint) to restore spatial correspondence.
+            x, _, _ = self.random_masking(x, mask_ratio=0.0)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
@@ -469,12 +522,15 @@ class SiamJEPA(nn.Module):
             x = blk(x)
         x = self.norm(x)
 
+        N, L = x.shape[0], x.shape[1] - 1
+        mask = torch.zeros([N, L], device=x.device)
+        ids_restore = torch.arange(L, device=x.device).unsqueeze(0).expand(N, -1)
+
         return x, mask, ids_restore
 
 
     def forward_predictor(self, x, ids_restore,z):
         # embed tokens
-        #x = self.decoder_embed(x)
         x = self.decoder_embed_deter(x)
 
         mask_tokens = self.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
@@ -506,9 +562,78 @@ class SiamJEPA(nn.Module):
         else:
             model = self
 
-        for ema_param, param in zip(model.ema_model.parameters(), model.parameters()):
-            ema_param.data.mul_(model.beta).add_(param.data, alpha=1 - model.beta)
-    
+        # pair by name (the EMA copy is encoder-only, so positional zip over
+        # model.parameters() would no longer line up), then one fused update
+        student = dict(model.named_parameters())
+        ema_params = []
+        student_params = []
+        for name, ema_param in model.ema_model.named_parameters():
+            ema_params.append(ema_param.data)
+            student_params.append(student[name].data)
+        torch._foreach_mul_(ema_params, model.beta)
+        torch._foreach_add_(ema_params, student_params, alpha=1 - model.beta)
+
+    @classmethod
+    def _is_legacy_key(cls, key, own_keys):
+        # keys that older checkpoints carry but this model no longer has: the
+        # non-encoder part of the EMA copy, and REMOVED_MODULES (student or EMA)
+        if key in own_keys:
+            return False
+        name = key[len('ema_model.'):] if key.startswith('ema_model.') else key
+        return key.startswith('ema_model.') or name.split('.')[0] in cls.REMOVED_MODULES
+
+    def load_state_dict(self, state_dict, strict=True, **kwargs):
+        # Older checkpoints also carry ema_model.{decoder_*, projector, ...}
+        # and the removed unused modules; drop those so they still load with
+        # strict=True (--resume/--init_checkpoint).
+        own_keys = set(self.state_dict().keys())
+        stale = [k for k in state_dict if self._is_legacy_key(k, own_keys)]
+        if stale:
+            state_dict = {k: v for k, v in state_dict.items() if k not in stale}
+            print(f"load_state_dict: dropped {len(stale)} keys this model no longer has "
+                  f"(non-encoder ema_model.*, removed unused modules)")
+        return super().load_state_dict(state_dict, strict=strict, **kwargs)
+
+    def convert_legacy_optimizer_state(self, optim_state, model_state):
+        """Make an optimizer state saved together with an older checkpoint
+        (which still had REMOVED_MODULES) loadable into an optimizer built by
+        optim_factory.add_weight_decay over this model: drop the removed
+        parameters' entries and renumber the rest."""
+        own_keys = set(self.state_dict().keys())
+        if not any(self._is_legacy_key(k, own_keys) and not k.startswith('ema_model.')
+                   for k in model_state):
+            return optim_state
+        trainable = [n for n, p in self.named_parameters() if p.requires_grad]
+        trainable_set = set(trainable)
+        # the old model's trainable parameters, in named_parameters() order
+        # (state_dict order, minus buffers / frozen pos_embeds / the EMA copy)
+        old_names = [k for k in model_state
+                     if k in trainable_set or (not k.startswith('ema_model.')
+                                               and self._is_legacy_key(k, own_keys))]
+
+        def groups(names):  # same split and order as optim_factory.add_weight_decay
+            no_decay = [n for n in names if model_state[n].ndim == 1 or n.endswith('.bias')]
+            decay = [n for n in names if n not in set(no_decay)]
+            return [no_decay, decay]
+
+        old_groups = groups(old_names)
+        new_names = [n for n in old_names if n in trainable_set]
+        assert new_names == trainable, "parameter order differs from the checkpoint"
+        new_groups = groups(new_names)
+        assert [len(g) for g in old_groups] == [len(g['params']) for g in optim_state['param_groups']], \
+            "optimizer state does not match the checkpoint's parameters"
+
+        old_index = {n: i for i, n in enumerate(old_groups[0] + old_groups[1])}
+        new_index = {n: i for i, n in enumerate(new_groups[0] + new_groups[1])}
+        state = {new_index[n]: optim_state['state'][old_index[n]]
+                 for n in new_index if old_index[n] in optim_state['state']}
+        param_groups = []
+        for g, names in zip(optim_state['param_groups'], new_groups):
+            param_groups.append({**g, 'params': [new_index[n] for n in names]})
+        print(f"convert_legacy_optimizer_state: dropped "
+              f"{len(old_index) - len(new_index)} removed parameters from the optimizer state")
+        return {'state': state, 'param_groups': param_groups}
+
     def get_feat(self, h, z,ids):
         h = self.decoder_embed_deter(h) + self.decoder_pos_embed
         if self.discrete != 0:
@@ -576,7 +701,7 @@ class SiamJEPA(nn.Module):
 
         # Posterior distribution from both images
         post_h1 = torch.cat([src_h_ca3_cls, self.projector(src_p[:, 0])], -1)
-        post_logits1 = self.to_posterior(post_h1)
+        post_logits1 = self.to_posterior(post_h1).float()
         post_logits1 = post_logits1.clamp(-20, 20)
             
         post_dist1 = self.make_dist(post_logits1)
@@ -585,7 +710,7 @@ class SiamJEPA(nn.Module):
         # Prior distribution only from current images
         prior_h1 = src_h_ca3_cls
 
-        prior_logits1 = self.to_prior(prior_h1.detach())
+        prior_logits1 = self.to_prior(prior_h1.detach()).float()
         prior_logits1 = prior_logits1.clamp(-20, 20)
 
         src_p_ca3_cls = self.ca3(self.projector(src_p[:, 0]))
@@ -593,7 +718,7 @@ class SiamJEPA(nn.Module):
 
         # Posterior distribution from both images
         post_p1 = torch.cat([src_p_ca3_cls, self.projector(src_h[:, 0])], -1)
-        post_logits2 = self.to_posterior(post_p1)
+        post_logits2 = self.to_posterior(post_p1).float()
         post_logits2 = post_logits2.clamp(-20, 20)
             
         post_dist2 = self.make_dist(post_logits2)
@@ -602,14 +727,26 @@ class SiamJEPA(nn.Module):
         # Prior distribution only from current images
         prior_p1 = src_p_ca3_cls
 
-        prior_logits2 = self.to_prior(prior_p1.detach())
+        prior_logits2 = self.to_prior(prior_p1.detach()).float()
         prior_logits2 = prior_logits2.clamp(-20, 20)
 
         #Predictor g
-        src_pred = self.forward_predictor(src_h_ca3, ids_restore, post_z1)
-        tgt_pred = self.forward_predictor(src_p_ca3, ids_restore, post_z2)
+        if self.fix_view2_restore:
+            # ids_shuffle = [view1 keep | view2 keep | masked in both];
+            # swap the first two segments so view2's tokens land in their own slots
+            len_keep = src_p.shape[1] - 1
+            ids_shuffle = torch.argsort(ids_restore, dim=1)
+            ids_restore2 = torch.argsort(torch.cat(
+                [ids_shuffle[:, len_keep:2 * len_keep], ids_shuffle[:, :len_keep],
+                 ids_shuffle[:, 2 * len_keep:]], dim=1), dim=1)
+        else:
+            ids_restore2 = ids_restore
 
-        with torch.cuda.amp.autocast(enabled=True):
+        src_pred = self.forward_predictor(src_h_ca3, ids_restore, post_z1)
+        tgt_pred = self.forward_predictor(src_p_ca3, ids_restore2, post_z2)
+
+        # KL in fp32 regardless of the autocast mode (the logits are already fp32)
+        with torch.cuda.amp.autocast(enabled=False):
            post_logits1_f = post_logits1.float()
            prior_logits1_f = prior_logits1.float()
            kl_loss1, kl_value1 = self.kl_loss(post_logits1_f, prior_logits1_f)
@@ -620,9 +757,10 @@ class SiamJEPA(nn.Module):
            kl_loss2, kl_value2 = self.kl_loss(post_logits2_f, prior_logits2_f)
         loss_sim1 = kl_loss1/2 + kl_loss2/2
 
-        src_pred_norm = F.normalize(src_pred, dim=-1, eps=1e-6)
-        tgt_pred_norm = F.normalize(tgt_pred, dim=-1, eps=1e-6)
-        src_z_norm    = F.normalize(src_z[:, 1:, :].detach(), dim=-1, eps=1e-6)
+        # cosine loss in fp32 (no-op casts when not running under bf16 autocast)
+        src_pred_norm = F.normalize(src_pred.float(), dim=-1, eps=1e-6)
+        tgt_pred_norm = F.normalize(tgt_pred.float(), dim=-1, eps=1e-6)
+        src_z_norm    = F.normalize(src_z[:, 1:, :].detach().float(), dim=-1, eps=1e-6)
 
         
 
@@ -637,8 +775,6 @@ class SiamJEPA(nn.Module):
         
         loss = loss_sim2 + self.kl_scale*loss_sim1
 
-        chk("loss_sim2",loss_sim2)
-        chk("loss_sim1",loss_sim1)
         return loss,src_pred,loss_sim1,loss_sim2
 
 
@@ -650,13 +786,17 @@ def siamjepa_vit_base_patch16_dec512d8b(**kwargs):
     return model
 
 
-# ViT-Large and ViT-Huge support is still under construction.
-#def siamjepa_vit_large_patch16_dec512d8b(**kwargs):
-#    model = PhiNets(
-#        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
-#        decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
-#        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-#    return model
+def siamjepa_vit_large_patch16_dec1024d1b(**kwargs):
+    # true ViT-L/16 encoder (24 blocks); predictor mirrors ViT-B's
+    # (one CSABlock at the encoder width)
+    model = SiamJEPA(
+        patch_size=16, embed_dim=1024, depth=24, num_heads=16,
+        decoder_embed_dim=1024, decoder_depth=1, decoder_num_heads=16,
+        mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+    return model
+
+
+# ViT-Huge support is still under construction.
 
 
 #def siamjepa_vit_huge_patch14_dec512d8b(**kwargs):
@@ -668,6 +808,6 @@ def siamjepa_vit_base_patch16_dec512d8b(**kwargs):
 
 
 # set recommended archs
-siamjepa_vit_base_patch16 = siamjepa_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
-#siamjepa_vit_large_patch16 = siamjepa_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
+siamjepa_vit_base_patch16 = siamjepa_vit_base_patch16_dec512d8b  # decoder: 768 dim, 1 block (name kept for checkpoints/scripts)
+siamjepa_vit_large_patch16 = siamjepa_vit_large_patch16_dec1024d1b  # decoder: 1024 dim, 1 block
 #siamjepa_vit_huge_patch14 = siamjepa_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks

@@ -44,6 +44,7 @@ import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
+import util.experiment_tracking as exptrack
 
 import models_siamjepa
 
@@ -69,6 +70,20 @@ def get_args_parser():
 
     parser.add_argument('--mask_ratio',type=float,nargs=3,default=(0.75, 0.75, 0.75),metavar=('First mask', 'Second mask', 'Third mask'),help='Masking ratio (percentage of removed patches).')
 
+    parser.add_argument('--precision', default='fp32', choices=['fp32', 'tf32', 'bf16'],
+                        help='fp32: plain fp32 matmuls (the setting used for the paper); tf32: fp32 with '
+                             'TF32 tensor-core matmuls; bf16: bf16 autocast for the encoders '
+                             '(+TF32 for whatever stays fp32). Losses/KL are always fp32.')
+    parser.add_argument('--grad_checkpointing', action='store_true',
+                        help='recompute student encoder activations in backward (saves memory, '
+                             'costs compute); e.g. for ViT-L at a larger per-GPU batch')
+    parser.add_argument('--bf16_predictor', action='store_true',
+                        help='with --precision bf16, also run the predictor (CSABlock) in bf16 '
+                             'instead of its default fp32 islands')
+    parser.add_argument('--fix_view2_restore', action='store_true',
+                        help='place view2 context tokens at their own positions in the predictor '
+                             '(default off = the paper setting, where view2 reuses view1\'s '
+                             'ids_restore and its context tokens sit in view1\'s slots)')
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=False)
@@ -84,6 +99,8 @@ def get_args_parser():
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
+    parser.add_argument('--clip_grad', type=float, default=3.0,
+                        help='gradient-norm clipping threshold (default 3.0 = earlier runs)')
     parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
                         help='epochs to warmup LR')
 
@@ -92,14 +109,24 @@ def get_args_parser():
                         help='dataset path')
 
     parser.add_argument('--output_dir', default='./output_dir_siamjepa',
-                        help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_dir',
-                        help='path where to tensorboard log')
+                        help='path where to save, empty for no saving. '
+                             'A run-specific subdirectory (job id/timestamp + git commit + '
+                             'key hyperparameters) is created under this path for each run.')
+    parser.add_argument('--log_dir', default=None,
+                        help='path where to tensorboard log (default: reuse the resolved --output_dir)')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='',
                         help='resume from checkpoint')
+    parser.add_argument('--init_checkpoint', default='',
+                        help='Load only model weights (strict) from this checkpoint before '
+                             'training, then start a fresh run (epoch 0, fresh optimizer/EMA) '
+                             'with this script\'s hyperparameters -- a warm start, as opposed to '
+                             '--resume which also restores optimizer/epoch/scaler state to '
+                             'continue the same run. Requires an identical architecture (e.g. a '
+                             'PhiNetv2 checkpoint, since SiamJEPA and PhiNetv2 share the same '
+                             'model class/shapes).')
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
@@ -119,6 +146,13 @@ def get_args_parser():
 
     parser.add_argument('--ema',type=float,nargs=3,default=(0.99, 0.999,0.9999),metavar=('EMA_START', 'MIDDLE_START','EMA_END'),help='EMA momentum schedule (start,middle, end). e.g. 0.99 0.999 0.9999')
     parser.add_argument('--kl_scale', type=float, default=0.01,help='KL scale (default: 0.01)')
+    parser.add_argument('--shuffle_teacher', action='store_true',
+                        help='Random Shuffle Teacher (RST): randomly permute the '
+                             'teacher/EMA branch patch tokens before prediction, to '
+                             'encourage semantic (position-invariant) patch '
+                             'representations. For the semantic-to-spatial '
+                             'curriculum, train with this flag first, then continue '
+                             'a second run without it via --init_checkpoint.')
 
 
     return parser
@@ -127,7 +161,32 @@ def get_args_parser():
 def main(args):
     misc.init_distributed_mode(args)
 
-    print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
+    repo_dir = os.path.dirname(os.path.realpath(__file__))
+    git_info = exptrack.get_git_info(repo_dir)
+
+    if args.output_dir:
+        mr = "-".join(f"{m:g}" for m in args.mask_ratio)
+        ema = "-".join(f"{e:g}" for e in args.ema)
+        init_tag = "_init-phinetv2" if args.init_checkpoint else ""
+        rst_tag = "_rst" if args.shuffle_teacher else ""
+        if args.model != 'siamjepa_vit_base_patch16':
+            rst_tag += "_" + args.model.replace('siamjepa_', '')
+        if args.fix_view2_restore:
+            rst_tag += "_v2fix"
+        if args.precision != 'fp32':
+            rst_tag += f"_{args.precision}" + ("-pred" if args.bf16_predictor else "")
+        tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"
+               f"_mr{mr}_ema{ema}_bs{args.batch_size}x{args.accum_iter}{rst_tag}{init_tag}")
+        args.output_dir = exptrack.make_run_dir(
+            args.output_dir, tag, git_info, misc.is_main_process(),
+            extra={"args": vars(args)},
+        )
+    if args.log_dir is None:
+        args.log_dir = args.output_dir
+
+    print('job dir: {}'.format(repo_dir))
+    print('git commit: {short_commit} (branch {branch}, dirty={dirty})'.format(**git_info))
+    print('resolved output_dir: {}'.format(args.output_dir))
     print("{}".format(args).replace(', ', ',\n'))
 
     device = torch.device(args.device)
@@ -138,6 +197,9 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
+    if args.precision in ('tf32', 'bf16'):
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
 
     # simple augmentation
     transform_train = transforms.Compose([
@@ -173,9 +235,23 @@ def main(args):
     )
     
     # define the model
-    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0])
+    model = models_siamjepa.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,kl_scale=args.kl_scale,beta=args.ema[0],mask_ratio=args.mask_ratio[0],shuffle_teacher=args.shuffle_teacher,fix_view2_restore=args.fix_view2_restore)
+
+    if args.bf16_predictor:
+        assert args.precision == 'bf16', "--bf16_predictor requires --precision bf16"
+        for m in model.modules():
+            if isinstance(m, models_siamjepa.CSABlock):
+                m.force_fp32 = False
+
+    model.grad_checkpointing = args.grad_checkpointing
 
     model.to(device)
+
+    if args.init_checkpoint:
+        print(f"Initializing model weights from {args.init_checkpoint} (weights only, fresh optimizer/epoch)")
+        init_ckpt = torch.load(args.init_checkpoint, map_location='cpu')
+        msg = model.load_state_dict(init_ckpt['model'], strict=True)
+        print(msg)
 
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
@@ -192,7 +268,9 @@ def main(args):
     print("effective batch size: %d" % eff_batch_size)
 
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        # every trainable parameter gets a gradient each step (checked by
+        # tests/test_model_params.py), so DDP can skip the unused-parameter scan
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
     
     # following timm: set wd as 0 for bias and norm layers

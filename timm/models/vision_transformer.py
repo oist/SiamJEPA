@@ -22,6 +22,7 @@ Hacked together by / Copyright 2020 Ross Wightman
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from functools import partial
 
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
@@ -160,11 +161,16 @@ class Attention(nn.Module):
             qkv[2],
         )  # make torchscript happy (cannot use tensor as tuple)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # [post-paper, SiamJEPA] replaced the explicit softmax(q k^T) v used for
+        # the paper's runs; identical up to floating-point rounding.
+        # fused kernel (flash / memory-efficient attention); same math as
+        # softmax(q k^T * scale) v, without materializing the attention matrix
+        x = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.attn_drop.p if self.training else 0.0,
+            scale=self.scale,
+        )
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -211,15 +217,23 @@ class CrossAttention(nn.Module):
             kv[0],
             kv[1],
         )  # make torchscript happy (cannot use tensor as tuple)
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        if src_mask != None:
+        # [post-paper, SiamJEPA] fused attention as in Attention above
+        if src_mask is None:
+            x = F.scaled_dot_product_attention(
+                q, k, v,
+                dropout_p=self.attn_drop.p if self.training else 0.0,
+                scale=self.scale,
+            )
+        else:
+            attn = (q @ k.transpose(-2, -1)) * self.scale
             src_mask = src_mask.unsqueeze(1)
             src_mask = src_mask.unsqueeze(1)
             src_mask = src_mask.repeat(1, self.num_heads, N, 1)
             attn = attn.masked_fill(src_mask == 0, -1e4)
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+        x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

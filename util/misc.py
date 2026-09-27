@@ -325,7 +325,12 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
         #print(msg)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and not (hasattr(args, 'eval') and args.eval):
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            optim_state = checkpoint['optimizer']
+            if hasattr(model_without_ddp, 'convert_legacy_optimizer_state'):
+                # checkpoints from before unused modules were removed
+                optim_state = model_without_ddp.convert_legacy_optimizer_state(
+                    optim_state, checkpoint['model'])
+            optimizer.load_state_dict(optim_state)
             args.start_epoch = checkpoint['epoch'] + 1
             if 'scaler' in checkpoint:
                 loss_scaler.load_state_dict(checkpoint['scaler'])
@@ -341,3 +346,15 @@ def all_reduce_mean(x):
         return x_reduce.item()
     else:
         return x
+
+
+def all_reduce_mean_list(xs):
+    """all_reduce_mean for several scalars with a single collective."""
+    world_size = get_world_size()
+    if world_size > 1:
+        x_reduce = torch.tensor(xs, dtype=torch.float64).cuda()
+        dist.all_reduce(x_reduce)
+        x_reduce /= world_size
+        return x_reduce.tolist()
+    else:
+        return list(xs)
