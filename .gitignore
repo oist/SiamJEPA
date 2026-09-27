@@ -5,6 +5,7 @@ output_dir_siamjepa/
 output_dir_linprobe/
 output_dir_knn/
 output_dir_posprobe/
+output_dir_pca/
 output_dir/
 *.out
 elastic_err_*.json
