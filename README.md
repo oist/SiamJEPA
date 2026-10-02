@@ -164,7 +164,7 @@ All of these default to the setting used in the paper.
 | `--grad_checkpointing` | `GRAD_CKPT=1` | Recompute the student encoder activations in the backward pass to save memory. |
 | `--clip_grad` | `CLIP_GRAD` | Gradient-norm clipping threshold (default 3.0). |
 | `--warmup_epochs` | `WARMUP_EPOCHS` | Learning-rate warmup epochs (default 40). |
-| `--fix_view2_restore` | `FIX_VIEW2_RESTORE=1` | Experimental: give the view-2 context tokens their own positional embeddings in the predictor. Off by default (paper setting); under evaluation. |
+| `--fix_view2_restore` | `FIX_VIEW2_RESTORE=1` | Optional; off by default (the setting used in the paper). |
 
 ## Linear probing
 
