@@ -84,7 +84,7 @@ Pretraining and linear probing expect an ImageNet-style folder layout:
 
 ## Pretraining
 
-Currently only `siamjepa_vit_base_patch16` is supported (the large/huge variants in `models_siamjepa.py` are not yet implemented).
+The paper uses `siamjepa_vit_base_patch16`. A ViT-L/16 variant (`siamjepa_vit_large_patch16`) is available but experimental and was not used in the paper; ViT-H is not yet implemented.
 
 ```bash
 torchrun --nproc_per_node=4 --master_port=29561 \
@@ -145,6 +145,26 @@ torchrun --nproc_per_node=4 --master_port=29561 \
 ```
 
 `run_pretrain.sh` supports the same curriculum via `pjsub -x` — see the `SHUFFLE_TEACHER` example in its header comment.
+
+### Numerical precision and speed
+
+All results reported in the paper were obtained with full fp32 precision (TF32 disabled), which is the default (`--precision fp32`; `PRECISION=fp32` in `run_pretrain.sh`).
+
+For faster training, `--precision tf32` (TF32 matmuls) and `--precision bf16` (bf16 autocast for the encoders; the losses and the KL term are still computed in fp32) are available. On 4x H100 they reduce the ViT-B pretraining time per epoch by roughly 3x and 4x, respectively. We are currently verifying that these settings reproduce the fp32 results; until then, please use the default fp32 setting to reproduce the paper.
+
+### Additional options
+
+All of these default to the setting used in the paper.
+
+| Argument | `run_pretrain.sh` | Description |
+|---|---|---|
+| `--precision {fp32,tf32,bf16}` | `PRECISION` | Numerical precision (see above; default `fp32`). |
+| `--bf16_predictor` | `BF16_PREDICTOR=1` | With `bf16`, also run the predictor in bf16 (by default it stays in fp32). |
+| `--model` | `MODEL` | `siamjepa_vit_base_patch16` (default) or the experimental `siamjepa_vit_large_patch16`. |
+| `--grad_checkpointing` | `GRAD_CKPT=1` | Recompute the student encoder activations in the backward pass to save memory. |
+| `--clip_grad` | `CLIP_GRAD` | Gradient-norm clipping threshold (default 3.0). |
+| `--warmup_epochs` | `WARMUP_EPOCHS` | Learning-rate warmup epochs (default 40). |
+| `--fix_view2_restore` | `FIX_VIEW2_RESTORE=1` | Experimental: give the view-2 context tokens their own positional embeddings in the predictor. Off by default (paper setting); under evaluation. |
 
 ## Linear probing
 
