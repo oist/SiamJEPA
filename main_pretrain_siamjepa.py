@@ -70,20 +70,20 @@ def get_args_parser():
 
     parser.add_argument('--mask_ratio',type=float,nargs=3,default=(0.75, 0.75, 0.75),metavar=('First mask', 'Second mask', 'Third mask'),help='Masking ratio (percentage of removed patches).')
 
-    parser.add_argument('--precision', default='fp32', choices=['fp32', 'tf32', 'bf16'],
-                        help='fp32: plain fp32 matmuls (the setting used for the paper); tf32: fp32 with '
-                             'TF32 tensor-core matmuls; bf16: bf16 autocast for the encoders '
-                             '(+TF32 for whatever stays fp32). Losses/KL are always fp32.')
+    parser.add_argument('--precision', default='bf16', choices=['fp32', 'tf32', 'bf16'],
+                        help='bf16 (default): bf16 autocast for the encoders (+TF32 for whatever stays fp32); '
+                             'fp32: plain fp32 matmuls (the setting used for the paper); tf32: fp32 with '
+                             'TF32 tensor-core matmuls. Losses/KL are always fp32.')
     parser.add_argument('--grad_checkpointing', action='store_true',
                         help='recompute student encoder activations in backward (saves memory, '
                              'costs compute); e.g. for ViT-L at a larger per-GPU batch')
     parser.add_argument('--bf16_predictor', action='store_true',
                         help='with --precision bf16, also run the predictor (CSABlock) in bf16 '
                              'instead of its default fp32 islands')
-    parser.add_argument('--fix_view2_restore', action='store_true',
+    parser.add_argument('--fix_view2_restore', action=argparse.BooleanOptionalAction, default=True,
                         help='place view2 context tokens at their own positions in the predictor '
-                             '(default off = the paper setting, where view2 reuses view1\'s '
-                             'ids_restore and its context tokens sit in view1\'s slots)')
+                             '(default). --no-fix_view2_restore reproduces the paper setting, where '
+                             'view2 reuses view1\'s ids_restore and its context tokens sit in view1\'s slots')
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=False)
@@ -171,8 +171,7 @@ def main(args):
         rst_tag = "_rst" if args.shuffle_teacher else ""
         if args.model != 'siamjepa_vit_base_patch16':
             rst_tag += "_" + args.model.replace('siamjepa_', '')
-        if args.fix_view2_restore:
-            rst_tag += "_v2fix"
+        rst_tag += "_v2fix" if args.fix_view2_restore else "_legacyv2"
         if args.precision != 'fp32':
             rst_tag += f"_{args.precision}" + ("-pred" if args.bf16_predictor else "")
         tag = (f"kl{args.kl_scale:g}_wd{args.weight_decay:g}"

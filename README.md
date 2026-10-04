@@ -148,23 +148,23 @@ torchrun --nproc_per_node=4 --master_port=29561 \
 
 ### Numerical precision and speed
 
-All results reported in the paper were obtained with full fp32 precision (TF32 disabled), which is the default (`--precision fp32`; `PRECISION=fp32` in `run_pretrain.sh`).
+The default is `--precision bf16` (`PRECISION=bf16` in `run_pretrain.sh`): bf16 autocast for the encoders, with the losses and the KL term still computed in fp32. On 4x H100 this reduces the ViT-B pretraining time per epoch by roughly 4x compared with fp32, and in our checks it reached the same final linear-probing accuracy as fp32. `--precision tf32` (TF32 matmuls, roughly 3x faster) is also available.
 
-For faster training, `--precision tf32` (TF32 matmuls) and `--precision bf16` (bf16 autocast for the encoders; the losses and the KL term are still computed in fp32) are available. On 4x H100 they reduce the ViT-B pretraining time per epoch by roughly 3x and 4x, respectively. We are currently verifying that these settings reproduce the fp32 results; until then, please use the default fp32 setting to reproduce the paper.
+All results reported in the paper were obtained with full fp32 precision (TF32 disabled); see the next section for the options that reproduce them exactly.
 
 ### Additional options
 
-All of these default to the setting used in the paper.
+To reproduce the paper exactly, use `--precision fp32 --no-fix_view2_restore` (`PRECISION=fp32,FIX_VIEW2_RESTORE=0`); the other options below default to the paper's setting.
 
 | Argument | `run_pretrain.sh` | Description |
 |---|---|---|
-| `--precision {fp32,tf32,bf16}` | `PRECISION` | Numerical precision (see above; default `fp32`). |
+| `--precision {fp32,tf32,bf16}` | `PRECISION` | Numerical precision (see above; default `bf16`; the paper used `fp32`). |
 | `--bf16_predictor` | `BF16_PREDICTOR=1` | With `bf16`, also run the predictor in bf16 (by default it stays in fp32). |
 | `--model` | `MODEL` | `siamjepa_vit_base_patch16` (default) or the experimental `siamjepa_vit_large_patch16`. |
 | `--grad_checkpointing` | `GRAD_CKPT=1` | Recompute the student encoder activations in the backward pass to save memory. |
 | `--clip_grad` | `CLIP_GRAD` | Gradient-norm clipping threshold (default 3.0). |
 | `--warmup_epochs` | `WARMUP_EPOCHS` | Learning-rate warmup epochs (default 40). |
-| `--fix_view2_restore` | `FIX_VIEW2_RESTORE=1` | Optional; off by default (the setting used in the paper). |
+| `--fix_view2_restore` / `--no-fix_view2_restore` | `FIX_VIEW2_RESTORE=1` / `0` | Predictor placement of view 2's context tokens. On by default; `--no-fix_view2_restore` gives the placement used in the paper. |
 
 ## Linear probing
 

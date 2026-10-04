@@ -41,17 +41,18 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 #   # warm-started from stage 1's checkpoint with RST off:
 #   pjsub -x "EPOCHS=200,SHUFFLE_TEACHER=1" run_pretrain.sh
 #
-#   # faster numerics: PRECISION=tf32 or bf16 (default fp32 = original runs);
+#   # numerics: default bf16; PRECISION=fp32 reproduces the paper's runs;
 #   # BF16_PREDICTOR=1 also runs the predictor in bf16 (only with bf16)
-#   pjsub -x "PRECISION=bf16" run_pretrain.sh
+#   pjsub -x "PRECISION=fp32" run_pretrain.sh
 #
 #   # ViT-L (does not fit 512/GPU: keep the effective batch with 256 x 8, or
 #   # GRAD_CKPT=1 to recompute encoder activations)
 #   pjsub -x "MODEL=siamjepa_vit_large_patch16,PRECISION=bf16,BATCH_SIZE=256,ACCUM_ITER=8" run_pretrain.sh
 #
-#   # view2 predictor placement fix (opt-in; default = the paper setting;
-#   # run dirs get "_v2fix")
-#   pjsub -x "FIX_VIEW2_RESTORE=1" run_pretrain.sh
+#   # the paper's view2 predictor placement (the fix is on by default;
+#   # run dirs get "_v2fix", or "_legacyv2" with FIX_VIEW2_RESTORE=0).
+#   # The paper's exact setting is PRECISION=fp32 with FIX_VIEW2_RESTORE=0:
+#   pjsub -x "PRECISION=fp32,FIX_VIEW2_RESTORE=0" run_pretrain.sh
 #   pjsub -x "EPOCHS=250,INIT_CHECKPOINT=./output_dir_siamjepa/<stage-1-run>/checkpoint-199.pth" run_pretrain.sh
 #
 # Every run still lands in its own self-describing subdirectory under
@@ -72,14 +73,14 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 : "${EPOCHS:=400}"
 : "${RESUME:=}"
 : "${SHUFFLE_TEACHER:=}"
-: "${PRECISION:=fp32}"
+: "${PRECISION:=bf16}"
 : "${MODEL:=siamjepa_vit_base_patch16}"
 : "${GRAD_CKPT:=}"
 : "${NUM_WORKERS:=10}"
 : "${CLIP_GRAD:=3.0}"
 : "${WARMUP_EPOCHS:=40}"
 : "${BF16_PREDICTOR:=}"
-: "${FIX_VIEW2_RESTORE:=}"
+: "${FIX_VIEW2_RESTORE:=1}"
 
 SHUFFLE_FLAG=""
 if [ -n "$SHUFFLE_TEACHER" ]; then
@@ -90,9 +91,9 @@ GRAD_CKPT_FLAG=""
 if [ -n "$GRAD_CKPT" ]; then
   GRAD_CKPT_FLAG="--grad_checkpointing"
 fi
-FIX_VIEW2_FLAG=""
-if [ -n "$FIX_VIEW2_RESTORE" ]; then
-  FIX_VIEW2_FLAG="--fix_view2_restore"
+FIX_VIEW2_FLAG="--fix_view2_restore"
+if [ "$FIX_VIEW2_RESTORE" = "0" ]; then
+  FIX_VIEW2_FLAG="--no-fix_view2_restore"
 fi
 if [ -n "$BF16_PREDICTOR" ]; then
   BF16_PREDICTOR_FLAG="--bf16_predictor"

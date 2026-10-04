@@ -16,8 +16,9 @@
 # below (speed-ups, an encoder-only EMA teacher, removal of never-used modules)
 # do not change what is computed in the default fp32 setting, except that the
 # random masks are drawn from a different random stream (same distribution);
-# see bench/check_speedup_equivalence.py. The view2 predictor placement fix is
-# opt-in (fix_view2_restore, default off = the paper setting).
+# see bench/check_speedup_equivalence.py. The view2 predictor placement fix
+# (fix_view2_restore) is on by default; fix_view2_restore=False reproduces the
+# placement used for the paper's results.
 
 from functools import partial
 
@@ -194,7 +195,7 @@ class SiamJEPA(nn.Module):
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
         discrete=32,kl_scale=0.01,
         kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,
-        shuffle_teacher=False, fix_view2_restore=False):
+        shuffle_teacher=False, fix_view2_restore=True):
         super().__init__()
 
         # --------------------------------------------------------------------------
@@ -266,11 +267,11 @@ class SiamJEPA(nn.Module):
         # the EMA deep-copy so both branches carry the same setting.
         self.shuffle_teacher = shuffle_teacher
 
-        # Opt-in fix (default off = the behaviour used for the paper's results):
-        # by default the view2 predictor reuses view1's ids_restore, which puts
-        # view2's context tokens in view1's slots (so they get view1's
-        # decoder_pos_embed). With fix_view2_restore=True, view2 gets its own
-        # ids_restore. Target slots / the loss are the same either way.
+        # [post-paper] view2 gets its own ids_restore (default). With
+        # fix_view2_restore=False the view2 predictor reuses view1's ids_restore,
+        # which puts view2's context tokens in view1's slots (so they get view1's
+        # decoder_pos_embed); that is the behaviour used for the paper's results.
+        # Target slots / the loss are the same either way.
         self.fix_view2_restore = fix_view2_restore
 
         self.initialize_weights()
