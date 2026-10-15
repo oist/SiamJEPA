@@ -59,7 +59,7 @@ export TORCHELASTIC_ERROR_FILE=$HOME/elastic_err_${PJM_JOBID:-$$}.json
 # OUTPUT_DIR (see util/experiment_tracking.py), so runs never overwrite
 # each other's checkpoints/logs regardless of which variables were set.
 # ------------------------------------------------------------------------------
-: "${KL_SCALE:=0.01}"
+: "${KL_SCALE:=}"   # empty: 0.05, or 0.01 with SHUFFLE_TEACHER (the paper used 0.01)
 : "${WEIGHT_DECAY:=0.1}"
 : "${BLR:=1.5e-4}"
 : "${BATCH_SIZE:=512}"
@@ -101,7 +101,7 @@ fi
 
 echo "=== Run config ==="
 echo "MODEL=$MODEL  GRAD_CKPT=$GRAD_CKPT  NUM_WORKERS=$NUM_WORKERS  CLIP_GRAD=$CLIP_GRAD  WARMUP_EPOCHS=$WARMUP_EPOCHS"
-echo "KL_SCALE=$KL_SCALE  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
+echo "KL_SCALE=${KL_SCALE:-default}  WEIGHT_DECAY=$WEIGHT_DECAY  BLR=$BLR"
 echo "BATCH_SIZE=$BATCH_SIZE  ACCUM_ITER=$ACCUM_ITER  MASK_RATIO=$MASK_RATIO  EMA=$EMA"
 echo "OUTPUT_DIR=$OUTPUT_DIR  DATA_PATH=$DATA_PATH  MASTER_PORT=$MASTER_PORT"
 echo "INIT_CHECKPOINT=$INIT_CHECKPOINT  EPOCHS=$EPOCHS  RESUME=$RESUME"
@@ -118,7 +118,7 @@ torchrun \
   --warmup_epochs $WARMUP_EPOCHS \
   --data_path $DATA_PATH \
   --output_dir $OUTPUT_DIR \
-  --kl_scale=$KL_SCALE \
+  ${KL_SCALE:+--kl_scale=$KL_SCALE} \
   --accum_iter $ACCUM_ITER \
   --blr $BLR \
   --batch_size $BATCH_SIZE \

@@ -155,6 +155,15 @@ def test_current_checkpoint_optimizer_untouched():
     assert model.convert_legacy_optimizer_state(sd, model.state_dict()) is sd
 
 
+
+def test_kl_scale_default():
+    # kl_scale defaults to 0.05, or 0.01 with the Random Shuffle Teacher; an explicit value wins
+    kw = dict(embed_dim=768, depth=1, num_heads=12, decoder_embed_dim=768, decoder_depth=1,
+              decoder_num_heads=12, beta=0.99, mask_ratio=0.75)
+    assert models_siamjepa.SiamJEPA(**kw).kl_scale == 0.05
+    assert models_siamjepa.SiamJEPA(shuffle_teacher=True, **kw).kl_scale == 0.01
+    assert models_siamjepa.SiamJEPA(kl_scale=1e-5, shuffle_teacher=True, **kw).kl_scale == 1e-5
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0

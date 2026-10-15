@@ -145,7 +145,8 @@ def get_args_parser():
                         help='url used to set up distributed training')
 
     parser.add_argument('--ema',type=float,nargs=3,default=(0.99, 0.999,0.9999),metavar=('EMA_START', 'MIDDLE_START','EMA_END'),help='EMA momentum schedule (start,middle, end). e.g. 0.99 0.999 0.9999')
-    parser.add_argument('--kl_scale', type=float, default=0.01,help='KL scale (default: 0.01)')
+    parser.add_argument('--kl_scale', type=float, default=None,
+                        help='KL scale (default: 0.05, or 0.01 with --shuffle_teacher; the paper used 0.01)')
     parser.add_argument('--shuffle_teacher', action='store_true',
                         help='Random Shuffle Teacher (RST): randomly permute the '
                              'teacher/EMA branch patch tokens before prediction, to '
@@ -313,6 +314,8 @@ def main(args):
 if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
+    if args.kl_scale is None:  # RST keeps the paper's 0.01; plain SiamJEPA defaults to 0.05
+        args.kl_scale = 0.01 if args.shuffle_teacher else 0.05
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

@@ -96,14 +96,14 @@ torchrun --nproc_per_node=4 --master_port=29561 \
   --blr 1.5e-4 --weight_decay 0.1 \
   --mask_ratio 0.75 0.75 0.75 \
   --ema 0.99 0.999 0.9999 \
-  --kl_scale 0.01
+  --kl_scale 0.05
 ```
 
 Key arguments:
 
 - `--mask_ratio` — three mask ratios applied across the Siamese views.
 - `--ema` — start/mid/end momentum values for the EMA teacher schedule.
-- `--kl_scale` — weight of the KL regularization term.
+- `--kl_scale` — weight of the KL regularization term. Defaults to 0.05, or 0.01 with `--shuffle_teacher`. The paper used 0.01 throughout; in our later runs with the current code, 0.05 trained more stably without RST.
 - `--shuffle_teacher` — enable the Random Shuffle Teacher (RST); see below.
 - `--init_checkpoint` — warm-start the model weights from an existing checkpoint (fresh optimizer/epoch count); used for the curriculum below.
 
@@ -154,7 +154,7 @@ All results reported in the paper were obtained with full fp32 precision (TF32 d
 
 ### Additional options
 
-To reproduce the paper exactly, use `--precision fp32 --no-fix_view2_restore` (`PRECISION=fp32,FIX_VIEW2_RESTORE=0`); the other options below default to the paper's setting.
+To reproduce the paper exactly, use `--precision fp32 --no-fix_view2_restore --kl_scale 0.01` (`PRECISION=fp32,FIX_VIEW2_RESTORE=0,KL_SCALE=0.01`); the other options below default to the paper's setting.
 
 | Argument | `run_pretrain.sh` | Description |
 |---|---|---|

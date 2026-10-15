@@ -193,7 +193,7 @@ class SiamJEPA(nn.Module):
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,stoch=32,
-        discrete=32,kl_scale=0.01,
+        discrete=32,kl_scale=None,
         kl_balance=0.2,kl_freebit=0.1,beta=0.996,mask_ratio=0.9,
         shuffle_teacher=False, fix_view2_restore=True):
         super().__init__()
@@ -294,7 +294,8 @@ class SiamJEPA(nn.Module):
         self.stoch = stoch
         self.discrete = discrete
         self.kl_balance = kl_balance
-        self.kl_scale = kl_scale
+        # default: 0.05, or 0.01 with the Random Shuffle Teacher (the paper used 0.01 throughout)
+        self.kl_scale = (0.01 if shuffle_teacher else 0.05) if kl_scale is None else kl_scale
         self.kl_freebit=kl_freebit
 
         self.mask_ratio=mask_ratio
